@@ -1,0 +1,19 @@
+.DS_Store
+
+# Dependencies
+node_modules/
+server/node_modules/
+web/node_modules/
+
+# Local runtime data
+server/data/
+server/uploads/
+
+# Build artifacts
+dist/
+web/dist/
+.image-build/cache/
+.image-build/*.img.gz
+
+# Local tool/editor state
+.claude/

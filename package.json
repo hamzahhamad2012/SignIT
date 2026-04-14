@@ -1,0 +1,18 @@
+{
+  "name": "signit",
+  "version": "1.0.0",
+  "private": true,
+  "description": "SignIT — Premium Digital Signage Platform for Raspberry Pi",
+  "scripts": {
+    "dev": "concurrently \"npm run dev:server\" \"npm run dev:web\"",
+    "dev:server": "cd server && npm run dev",
+    "dev:web": "cd web && npm run dev",
+    "build": "cd web && npm run build",
+    "start": "cd server && npm start",
+    "setup": "npm install && cd server && npm install && cd ../web && npm install",
+    "test": "cd server && npm test"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2"
+  }
+}

@@ -1,0 +1,84 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  * {
+    border-color: #2e2e32;
+  }
+
+  body {
+    @apply bg-[#09090b] text-zinc-100 antialiased;
+    font-feature-settings: 'cv02', 'cv03', 'cv04', 'cv11';
+  }
+
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: #333;
+    border-radius: 3px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: #555;
+  }
+
+  input[type="text"],
+  input[type="email"],
+  input[type="password"],
+  input[type="search"],
+  input[type="number"],
+  input[type="url"],
+  input[type="date"],
+  input[type="time"],
+  textarea,
+  select {
+    @apply bg-surface-raised border border-surface-border rounded-lg px-3 py-2 text-sm text-zinc-100
+      placeholder-zinc-500 focus:outline-none focus:ring-2 focus:ring-accent/40 focus:border-accent
+      transition-all duration-200;
+  }
+}
+
+@layer components {
+  .btn {
+    @apply inline-flex items-center justify-center gap-2 px-4 py-2 rounded-lg text-sm font-medium
+      transition-all duration-200 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed;
+  }
+  .btn-primary {
+    @apply btn bg-accent hover:bg-accent-hover text-white shadow-lg shadow-accent/20;
+  }
+  .btn-secondary {
+    @apply btn bg-surface-raised hover:bg-surface-hover text-zinc-300 border border-surface-border;
+  }
+  .btn-danger {
+    @apply btn bg-red-600/20 hover:bg-red-600/30 text-red-400 border border-red-500/30;
+  }
+  .btn-ghost {
+    @apply btn hover:bg-surface-hover text-zinc-400 hover:text-zinc-200;
+  }
+
+  .card {
+    @apply bg-surface rounded-xl border border-surface-border p-5;
+  }
+
+  .stat-card {
+    @apply card flex flex-col gap-1 relative overflow-hidden;
+  }
+
+  .badge {
+    @apply inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-xs font-medium;
+  }
+  .badge-online {
+    @apply badge bg-emerald-500/15 text-emerald-400;
+  }
+  .badge-offline {
+    @apply badge bg-zinc-500/15 text-zinc-400;
+  }
+  .badge-error {
+    @apply badge bg-red-500/15 text-red-400;
+  }
+}

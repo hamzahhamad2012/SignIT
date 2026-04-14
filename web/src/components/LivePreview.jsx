@@ -1,0 +1,140 @@
+import { useState, useEffect, useRef } from 'react';
+import { Play, Pause, SkipForward, Maximize, Minimize, X } from 'lucide-react';
+
+export default function LivePreview({ items, transition = 'fade', transitionDuration = 800, bgColor = '#000' }) {
+  const [currentIdx, setCurrentIdx] = useState(0);
+  const [playing, setPlaying] = useState(true);
+  const [fullscreen, setFullscreen] = useState(false);
+  const timerRef = useRef(null);
+  const containerRef = useRef(null);
+
+  useEffect(() => {
+    if (!playing || items.length <= 1) return;
+    const item = items[currentIdx];
+    const duration = (item?.duration || 10) * 1000;
+    timerRef.current = setTimeout(() => {
+      setCurrentIdx(prev => (prev + 1) % items.length);
+    }, duration);
+    return () => clearTimeout(timerRef.current);
+  }, [currentIdx, playing, items]);
+
+  const skip = () => {
+    clearTimeout(timerRef.current);
+    setCurrentIdx(prev => (prev + 1) % items.length);
+  };
+
+  const toggleFullscreen = () => {
+    if (!fullscreen) {
+      containerRef.current?.requestFullscreen?.();
+    } else {
+      document.exitFullscreen?.();
+    }
+    setFullscreen(!fullscreen);
+  };
+
+  useEffect(() => {
+    const handler = () => setFullscreen(!!document.fullscreenElement);
+    document.addEventListener('fullscreenchange', handler);
+    return () => document.removeEventListener('fullscreenchange', handler);
+  }, []);
+
+  const getAssetUrl = (item) => {
+    if (item.url) return item.url;
+    if (item.filename) {
+      const subdir = item.asset_type === 'video' ? 'videos' : item.asset_type === 'html' ? 'html' : 'images';
+      return `/uploads/${subdir}/${item.filename}`;
+    }
+    return null;
+  };
+
+  const transitionStyle = {
+    transition: `opacity ${transitionDuration}ms ease-in-out, transform ${transitionDuration}ms ease-in-out`,
+  };
+
+  if (items.length === 0) {
+    return (
+      <div className="aspect-video rounded-xl bg-black flex items-center justify-center text-zinc-600 text-sm">
+        No content to preview
+      </div>
+    );
+  }
+
+  return (
+    <div ref={containerRef} className="relative group rounded-xl overflow-hidden" style={{ background: bgColor }}>
+      <div className="aspect-video relative overflow-hidden">
+        {items.map((item, idx) => {
+          const isActive = idx === currentIdx;
+          const url = getAssetUrl(item);
+
+          return (
+            <div
+              key={item.id || idx}
+              className="absolute inset-0"
+              style={{
+                ...transitionStyle,
+                opacity: isActive ? 1 : 0,
+                transform: !isActive && transition === 'zoom' ? 'scale(1.1)' : 'scale(1)',
+                zIndex: isActive ? 1 : 0,
+                pointerEvents: isActive ? 'auto' : 'none',
+              }}
+            >
+              {item.asset_type === 'image' && url && (
+                <img src={url} alt={item.asset_name}
+                  className="w-full h-full" style={{ objectFit: item.fit || 'cover' }} />
+              )}
+              {item.asset_type === 'video' && url && (
+                <video src={url} muted={item.muted} autoPlay={isActive} loop
+                  className="w-full h-full" style={{ objectFit: item.fit || 'cover' }} />
+              )}
+              {(item.asset_type === 'url' || item.asset_type === 'stream') && item.url && (
+                <iframe src={item.url} className="w-full h-full border-none" title={item.asset_name} />
+              )}
+              {!url && (
+                <div className="w-full h-full flex items-center justify-center text-zinc-600">
+                  {item.asset_name || 'No content'}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Controls overlay */}
+      <div className="absolute bottom-0 inset-x-0 bg-gradient-to-t from-black/80 via-black/40 to-transparent p-4
+        opacity-0 group-hover:opacity-100 transition-opacity duration-300">
+        {/* Progress bar */}
+        <div className="flex gap-1 mb-3">
+          {items.map((_, idx) => (
+            <div key={idx} className="flex-1 h-0.5 rounded-full overflow-hidden bg-white/20 cursor-pointer"
+              onClick={() => setCurrentIdx(idx)}>
+              <div className={`h-full rounded-full transition-all duration-300 ${idx === currentIdx ? 'bg-accent w-full' : idx < currentIdx ? 'bg-white/50 w-full' : 'w-0'}`} />
+            </div>
+          ))}
+        </div>
+
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <button onClick={() => setPlaying(!playing)} className="p-1.5 rounded-lg hover:bg-white/10 text-white transition-colors">
+              {playing ? <Pause size={16} /> : <Play size={16} />}
+            </button>
+            <button onClick={skip} className="p-1.5 rounded-lg hover:bg-white/10 text-white transition-colors">
+              <SkipForward size={16} />
+            </button>
+            <span className="text-xs text-white/70 ml-2">
+              {currentIdx + 1} / {items.length}
+            </span>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-white/50">
+              {items[currentIdx]?.asset_name}
+            </span>
+            <button onClick={toggleFullscreen} className="p-1.5 rounded-lg hover:bg-white/10 text-white transition-colors">
+              {fullscreen ? <Minimize size={16} /> : <Maximize size={16} />}
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}

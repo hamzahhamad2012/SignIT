@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SignIT Setup</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #09090b; --surface: #18181b; --surface-2: #27272a; --surface-3: #3f3f46;
+      --border: #27272a; --text: #fafafa; --text-dim: #a1a1aa; --text-muted: #71717a;
+      --accent: #8b5cf6; --accent-glow: rgba(139, 92, 246, 0.3);
+      --green: #22c55e; --red: #ef4444; --amber: #f59e0b; --cyan: #06b6d4;
+    }
+
+    body {
+      font-family: 'Inter', -apple-system, sans-serif;
+      background: var(--bg); color: var(--text);
+      height: 100vh; overflow: hidden;
+      -webkit-font-smoothing: antialiased; cursor: none;
+    }
+
+    .app { height: 100vh; display: flex; flex-direction: column; }
+
+    .top-bar {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 14px 32px; background: var(--surface); border-bottom: 1px solid var(--border); z-index: 10;
+    }
+    .top-bar .logo { font-size: 20px; font-weight: 800; background: linear-gradient(135deg, var(--accent), var(--cyan)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+    .top-bar .hints { display: flex; gap: 20px; font-size: 12px; color: var(--text-muted); }
+    .top-bar .hints kbd { display: inline-block; padding: 2px 7px; border-radius: 4px; background: var(--surface-2); border: 1px solid var(--surface-3); color: var(--text-dim); font-family: inherit; font-size: 11px; margin-right: 3px; }
+
+    .main { flex: 1; display: flex; align-items: center; justify-content: center; padding: 24px; }
+
+    .status-bar {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 10px 32px; background: var(--surface); border-top: 1px solid var(--border);
+      font-size: 11px; color: var(--text-muted);
+    }
+    .status-bar .net { display: flex; align-items: center; gap: 8px; }
+    .dot { width: 8px; height: 8px; border-radius: 50%; }
+    .dot.on { background: var(--green); box-shadow: 0 0 8px rgba(34,197,94,0.5); }
+    .dot.off { background: var(--red); }
+    .dot.wait { background: var(--amber); animation: pulse 1.5s infinite; }
+    @keyframes pulse { 0%,100% { opacity:1; } 50% { opacity:0.4; } }
+
+    .card {
+      background: var(--surface); border: 1px solid var(--border); border-radius: 20px;
+      padding: 44px 48px; width: 100%; max-width: 540px;
+      box-shadow: 0 25px 60px rgba(0,0,0,0.5); animation: up 0.4s ease;
+    }
+    @keyframes up { from { opacity:0; transform:translateY(30px); } to { opacity:1; transform:translateY(0); } }
+
+    .card h1 { font-size: 26px; font-weight: 700; margin-bottom: 4px; }
+    .card .sub { font-size: 13px; color: var(--text-muted); margin-bottom: 28px; line-height: 1.5; }
+
+    .icon-wrap { width: 56px; height: 56px; border-radius: 16px; display: flex; align-items: center; justify-content: center; margin-bottom: 18px; font-size: 26px; }
+
+    .field { margin-bottom: 16px; }
+    .field label { display: block; font-size: 11px; font-weight: 600; color: var(--text-dim); margin-bottom: 5px; text-transform: uppercase; letter-spacing: 0.5px; }
+    .field input {
+      width: 100%; padding: 13px 14px; background: var(--bg); border: 1px solid var(--border);
+      border-radius: 10px; color: var(--text); font-size: 15px; font-family: inherit; outline: none; transition: border-color 0.2s;
+    }
+    .field input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-glow); }
+    .field input::placeholder { color: var(--text-muted); }
+
+    .btn {
+      display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+      padding: 13px 24px; border-radius: 10px; font-size: 14px; font-weight: 600;
+      font-family: inherit; border: none; cursor: pointer; transition: all 0.2s; width: 100%;
+    }
+    .btn-primary { background: var(--accent); color: white; }
+    .btn-primary:hover { filter: brightness(1.15); }
+    .btn-primary:disabled { opacity: 0.5; }
+    .btn-ghost { background: transparent; color: var(--text-dim); border: 1px solid var(--surface-3); }
+
+    .msg { padding: 10px 14px; border-radius: 8px; font-size: 12px; margin-bottom: 14px; }
+    .msg.err { background: rgba(239,68,68,0.1); color: #fca5a5; border: 1px solid rgba(239,68,68,0.2); }
+    .msg.ok { background: rgba(34,197,94,0.1); color: #86efac; border: 1px solid rgba(34,197,94,0.2); }
+    .msg.info { background: rgba(6,182,212,0.1); color: #67e8f9; border: 1px solid rgba(6,182,212,0.2); }
+
+    .spinner { width: 28px; height: 28px; border: 3px solid var(--surface-3); border-top-color: var(--accent); border-radius: 50%; animation: spin 0.8s linear infinite; margin: 0 auto 12px; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .loading-text { text-align: center; color: var(--text-muted); font-size: 13px; padding: 30px; }
+
+    /* Big ID display */
+    .device-id {
+      font-family: 'Courier New', monospace; font-size: 48px; font-weight: 900;
+      text-align: center; letter-spacing: 8px; color: var(--accent);
+      padding: 20px; background: var(--bg); border-radius: 14px;
+      border: 2px solid rgba(139,92,246,0.3); margin: 16px 0; user-select: all;
+    }
+
+    .success { text-align: center; }
+    .success .check { width: 72px; height: 72px; border-radius: 50%; background: rgba(34,197,94,0.12); display: flex; align-items: center; justify-content: center; margin: 0 auto 20px; font-size: 32px; animation: pop 0.4s ease; }
+    @keyframes pop { from { transform: scale(0.5); opacity:0; } to { transform: scale(1); opacity:1; } }
+    .success .info-row { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 13px; }
+    .success .info-row span:first-child { color: var(--text-muted); }
+    .success .info-row span:last-child { color: var(--text); font-weight: 500; }
+
+    .wifi-list { max-height: 280px; overflow-y: auto; border: 1px solid var(--border); border-radius: 12px; margin-bottom: 14px; }
+    .wifi-item { display: flex; align-items: center; justify-content: space-between; padding: 12px 14px; border-bottom: 1px solid var(--border); cursor: pointer; transition: background 0.15s; }
+    .wifi-item:last-child { border-bottom: none; }
+    .wifi-item:hover, .wifi-item.sel { background: var(--surface-2); }
+    .wifi-item .name { font-size: 14px; font-weight: 500; }
+    .wifi-item .meta { display: flex; align-items: center; gap: 8px; font-size: 11px; color: var(--text-muted); }
+    .bars { display: flex; align-items: flex-end; gap: 2px; height: 14px; }
+    .bars .b { width: 3px; border-radius: 1px; background: var(--surface-3); }
+    .bars .b.a { background: var(--green); }
+    .bars .b:nth-child(1) { height: 3px; } .bars .b:nth-child(2) { height: 6px; } .bars .b:nth-child(3) { height: 10px; } .bars .b:nth-child(4) { height: 14px; }
+
+    .overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.7); backdrop-filter: blur(8px); z-index: 100; display: flex; align-items: center; justify-content: center; animation: fadein 0.2s; }
+    @keyframes fadein { from { opacity:0; } to { opacity:1; } }
+    .overlay .card { max-width: 500px; }
+    .hidden { display: none !important; }
+
+    ::-webkit-scrollbar { width: 5px; } ::-webkit-scrollbar-track { background: transparent; } ::-webkit-scrollbar-thumb { background: var(--surface-3); border-radius: 3px; }
+
+    .waiting-screen { text-align: center; }
+    .waiting-screen .big-text { font-size: 16px; color: var(--text-dim); margin-top: 16px; }
+    .waiting-screen .hint { font-size: 12px; color: var(--text-muted); margin-top: 8px; }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <div class="top-bar">
+      <div class="logo">SignIT</div>
+      <div class="hints">
+        <span><kbd>F6</kbd> Wi-Fi</span>
+        <span><kbd>F2</kbd> Server Settings</span>
+        <span><kbd>F5</kbd> Refresh</span>
+      </div>
+    </div>
+    <div class="main" id="main"></div>
+    <div class="status-bar">
+      <div class="net"><div class="dot" id="netDot"></div><span id="netLabel">Checking...</span></div>
+      <div><span id="ipLabel"></span> · <span id="hostLabel"></span></div>
+      <div>SignIT Player v1.0</div>
+    </div>
+  </div>
+
+  <div class="overlay hidden" id="wifiOverlay">
+    <div class="card">
+      <div class="icon-wrap" style="background:rgba(139,92,246,0.12)">📶</div>
+      <h1>Wi-Fi Settings</h1>
+      <p class="sub">Select a network to connect</p>
+      <div id="wifiOvContent"></div>
+      <div style="display:flex;gap:8px;margin-top:16px">
+        <button class="btn btn-ghost" onclick="closeWifi()">Close <small>(Esc)</small></button>
+        <button class="btn btn-ghost" onclick="scanWifi('ov')">Rescan</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const API = 'http://localhost:8888';
+    let state = { net: 'checking', ssid: '', ip: '', host: '' };
+
+    async function get(p) { return (await fetch(API+p)).json(); }
+    async function post(p, b) { return (await fetch(API+p, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(b) })).json(); }
+
+    // ── Network status ──
+    async function checkNet() {
+      try {
+        const d = await get('/status');
+        state.net = d.internet ? 'on' : (d.wifi_connected ? 'wait' : 'off');
+        state.ssid = d.ssid || ''; state.ip = d.ip || ''; state.host = d.hostname || '';
+        document.getElementById('netDot').className = 'dot ' + state.net;
+        document.getElementById('netLabel').textContent = state.net === 'on' ? `Connected — ${d.ssid||'Ethernet'}` : state.net === 'wait' ? `${d.ssid} (no internet)` : 'No connection';
+        document.getElementById('ipLabel').textContent = d.ip || '';
+        document.getElementById('hostLabel').textContent = d.hostname || '';
+      } catch { state.net = 'off'; document.getElementById('netDot').className = 'dot off'; document.getElementById('netLabel').textContent = 'Starting...'; }
+    }
+    setInterval(checkNet, 5000); checkNet();
+
+    // ── WiFi ──
+    async function scanWifi(t) {
+      const c = t === 'ov' ? document.getElementById('wifiOvContent') : document.getElementById('wifiStepContent');
+      if (c) c.innerHTML = '<div class="loading-text"><div class="spinner"></div>Scanning...</div>';
+      try {
+        const d = await get('/wifi/scan');
+        renderWifi(c, d.networks || [], t);
+      } catch { if (c) c.innerHTML = '<div class="msg err">WiFi scan failed</div>'; }
+    }
+    function renderWifi(c, nets, t) {
+      if (!c) return;
+      if (!nets.length) { c.innerHTML = '<div class="msg info">No networks found. Try again.</div>'; return; }
+      c.innerHTML = '<div class="wifi-list">' + nets.map((n,i) => {
+        const s = Math.min(4, Math.max(1, Math.ceil((n.signal+100)/25)));
+        const bars = [1,2,3,4].map(b=>`<div class="b ${b<=s?'a':''}"></div>`).join('');
+        const cur = n.ssid === state.ssid;
+        return `<div class="wifi-item ${cur?'sel':''}" onclick="pickWifi(${i},'${t}')"><div><div class="name">${n.ssid}${cur?' <small style="color:var(--green)">(current)</small>':''}</div></div><div class="meta">${n.security?'🔒':''}<div class="bars">${bars}</div></div></div>`;
+      }).join('') + '</div>';
+      window._nets = nets;
+    }
+    async function pickWifi(i, t) {
+      const n = window._nets[i];
+      const c = t==='ov' ? document.getElementById('wifiOvContent') : document.getElementById('wifiStepContent');
+      if (!n.security) { await doConnect(n.ssid, '', c); return; }
+      c.innerHTML = `<div class="msg info">Connecting to <strong>${n.ssid}</strong></div><div class="field"><label>Password</label><input type="password" id="wfp" placeholder="Enter WiFi password" autofocus onkeydown="if(event.key==='Enter')doConnect('${n.ssid}',this.value,parentElement.parentElement)"></div><div style="display:flex;gap:8px;margin-top:12px"><button class="btn btn-ghost" onclick="scanWifi('${t}')">Back</button><button class="btn btn-primary" onclick="doConnect('${n.ssid}',document.getElementById('wfp').value,this.parentElement.parentElement)">Connect</button></div>`;
+      setTimeout(()=>document.getElementById('wfp')?.focus(),100);
+    }
+    async function doConnect(ssid, pw, c) {
+      c.innerHTML = '<div class="loading-text"><div class="spinner"></div>Connecting to '+ssid+'...</div>';
+      try {
+        const r = await post('/wifi/connect', {ssid, password:pw});
+        if (r.success) { c.innerHTML = `<div class="msg ok">Connected to <strong>${ssid}</strong>!</div>`; state.ssid = ssid; setTimeout(checkNet,2000); setTimeout(()=>showStep('server'),1500); }
+        else { c.innerHTML = `<div class="msg err">${r.error||'Failed'}</div><button class="btn btn-ghost" style="margin-top:8px" onclick="scanWifi('step')">Retry</button>`; }
+      } catch { c.innerHTML = '<div class="msg err">Connection failed</div>'; }
+    }
+    function openWifi() { document.getElementById('wifiOverlay').classList.remove('hidden'); scanWifi('ov'); }
+    function closeWifi() { document.getElementById('wifiOverlay').classList.add('hidden'); }
+
+    // ── Steps ──
+    function showStep(s) {
+      const m = document.getElementById('main');
+      switch(s) {
+        case 'wifi': renderWifiStep(m); break;
+        case 'server': renderServerStep(m); break;
+        case 'registering': renderRegistering(m); break;
+        case 'done': renderDone(m); break;
+      }
+    }
+
+    function renderWifiStep(m) {
+      m.innerHTML = `<div class="card"><div class="icon-wrap" style="background:rgba(139,92,246,0.12)">📶</div><h1>Connect to Wi-Fi</h1><p class="sub">Your display needs internet to reach the SignIT server.</p>
+        ${state.net==='on' ? `<div class="msg ok">Connected to <strong>${state.ssid}</strong></div><div id="wifiStepContent"></div><div style="display:flex;gap:8px;margin-top:14px"><button class="btn btn-ghost" onclick="scanWifi('step')">Change Network</button><button class="btn btn-primary" onclick="showStep('server')">Continue →</button></div>` : `<div id="wifiStepContent"></div><button class="btn btn-ghost" style="margin-top:10px" onclick="scanWifi('step')">Scan Again</button><div style="text-align:center;margin-top:14px"><button class="btn btn-ghost" style="width:auto;padding:8px 16px;font-size:12px" onclick="showStep('server')">Skip (Ethernet) →</button></div>`}
+      </div>`;
+      if (state.net !== 'on') scanWifi('step');
+    }
+
+    function renderServerStep(m) {
+      m.innerHTML = `<div class="card"><div class="icon-wrap" style="background:rgba(6,182,212,0.12)">🌐</div><h1>Connect to Server</h1><p class="sub">Enter the URL of your SignIT server. Find it in your SignIT dashboard.</p>
+        <div class="field"><label>Server URL</label><input type="url" id="srvUrl" placeholder="http://192.168.1.100:4000" value="${localStorage.getItem('signit_srv')||''}" onkeydown="if(event.key==='Enter')testAndRegister()" autofocus></div>
+        <div id="srvMsg"></div>
+        <div style="display:flex;gap:8px;margin-top:8px"><button class="btn btn-ghost" onclick="showStep('wifi')">← Back</button><button class="btn btn-primary" id="srvBtn" onclick="testAndRegister()">Connect & Register</button></div>
+      </div>`;
+      setTimeout(()=>document.getElementById('srvUrl')?.focus(),100);
+    }
+
+    async function testAndRegister() {
+      const url = document.getElementById('srvUrl').value.trim().replace(/\/$/,'');
+      if (!url) return;
+      localStorage.setItem('signit_srv', url);
+      document.getElementById('srvMsg').innerHTML = '<div class="msg info">Testing connection...</div>';
+      document.getElementById('srvBtn').disabled = true;
+
+      try {
+        const test = await post('/test-server', { url });
+        if (!test.success) { document.getElementById('srvMsg').innerHTML = `<div class="msg err">${test.error||'Cannot reach server'}</div>`; document.getElementById('srvBtn').disabled=false; return; }
+        document.getElementById('srvMsg').innerHTML = '<div class="msg ok">Server found! Registering this display...</div>';
+        const reg = await post('/register', { server_url: url });
+        if (reg.success) {
+          window._device = reg.device;
+          window._serverUrl = url;
+          showStep('done');
+        } else {
+          document.getElementById('srvMsg').innerHTML = `<div class="msg err">${reg.error||'Registration failed'}</div>`;
+        }
+      } catch(e) {
+        document.getElementById('srvMsg').innerHTML = `<div class="msg err">Failed: ${e.message}</div>`;
+      }
+      const btn = document.getElementById('srvBtn');
+      if (btn) btn.disabled = false;
+    }
+
+    function renderRegistering(m) {
+      m.innerHTML = `<div class="card waiting-screen"><div class="spinner"></div><h1>Registering...</h1><p class="sub">Connecting to server and getting your Player ID</p></div>`;
+    }
+
+    function renderDone(m) {
+      const d = window._device || {};
+      m.innerHTML = `<div class="card success">
+        <div class="check">✓</div>
+        <h1>Display Registered!</h1>
+        <p class="sub">This display is now connected to your SignIT server.<br>It will appear in your dashboard automatically.</p>
+        <div style="margin-bottom:16px"><div style="font-size:11px;font-weight:600;color:var(--text-muted);text-transform:uppercase;letter-spacing:0.5px;margin-bottom:8px">Your Player ID</div><div class="device-id">${d.device_id||'—'}</div></div>
+        <div style="text-align:left;margin-bottom:20px">
+          <div class="info-row"><span>Name</span><span>${d.device_name||'—'}</span></div>
+          <div class="info-row"><span>Server</span><span>${window._serverUrl||'—'}</span></div>
+          <div class="info-row"><span>IP Address</span><span>${state.ip||'—'}</span></div>
+        </div>
+        <div class="msg info" style="text-align:left">
+          <strong>Next:</strong> Go to your SignIT dashboard → <strong>Devices</strong> to see this display, assign a playlist, and start pushing content.
+        </div>
+        <div style="margin-top:14px;font-size:12px;color:var(--text-muted)">Content will appear here automatically once assigned. Starting player...</div>
+        <div id="countdown" style="margin-top:8px;font-size:12px;color:var(--text-muted)"></div>
+      </div>`;
+
+      let sec = 10;
+      const iv = setInterval(() => {
+        sec--;
+        const el = document.getElementById('countdown');
+        if (el) el.textContent = `Switching to content mode in ${sec}s...`;
+        if (sec <= 0) { clearInterval(iv); post('/start-player',{}).catch(()=>{}); }
+      }, 1000);
+    }
+
+    // ── Keyboard ──
+    document.addEventListener('keydown', e => {
+      if (e.key === 'F6') { e.preventDefault(); const ov = document.getElementById('wifiOverlay'); if (ov.classList.contains('hidden')) openWifi(); else closeWifi(); }
+      if (e.key === 'F5') { e.preventDefault(); checkNet(); }
+      if (e.key === 'F2') { e.preventDefault(); showStep('server'); closeWifi(); }
+      if (e.key === 'Escape') closeWifi();
+    });
+
+    // ── Boot ──
+    (async () => {
+      await checkNet();
+      try {
+        const cfg = await get('/config');
+        if (cfg.configured) { window._device = { device_id: cfg.device_id }; window._serverUrl = cfg.server_url; showStep('done'); return; }
+        if (cfg.server_url) localStorage.setItem('signit_srv', cfg.server_url);
+      } catch {}
+      showStep(state.net === 'on' ? 'server' : 'wifi');
+    })();
+  </script>
+</body>
+</html>
