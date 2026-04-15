@@ -44,7 +44,15 @@ const io = new Server(server, {
 app.set('io', io);
 
 app.use(cors({ origin: isProduction ? false : '*' }));
-app.use(helmet({ crossOriginResourcePolicy: { policy: 'cross-origin' } }));
+app.use(helmet({
+  crossOriginResourcePolicy: { policy: 'cross-origin' },
+  contentSecurityPolicy: {
+    directives: {
+      // Raw-IP HTTP deployments should not force asset requests to HTTPS.
+      upgradeInsecureRequests: null,
+    },
+  },
+}));
 app.use(morgan(isProduction ? 'combined' : 'dev'));
 app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true }));
