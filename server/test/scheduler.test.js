@@ -375,4 +375,86 @@ test('core API smoke test covers auth, content, devices, schedules, and player r
   });
   assert.equal(playerRestored.ok, true);
   assert.equal(playerRestored.data.playlist.name, 'Fallback Playlist');
+
+  const signup = await request('/api/auth/signup', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      name: 'Viewer User',
+      email: 'viewer@example.com',
+      password: 'viewerpass123',
+    }),
+  });
+  assert.equal(signup.status, 201);
+
+  const pendingLogin = await request('/api/auth/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email: 'viewer@example.com', password: 'viewerpass123' }),
+  });
+  assert.equal(pendingLogin.status, 403);
+
+  const users = await request('/api/users', {
+    headers: { Authorization: authHeaders.Authorization },
+  });
+  assert.equal(users.ok, true);
+
+  const viewer = users.data.users.find((user) => user.email === 'viewer@example.com');
+  assert.ok(viewer);
+  assert.equal(viewer.status, 'pending');
+
+  const approveViewer = await request(`/api/users/${viewer.id}`, {
+    method: 'PUT',
+    headers: authHeaders,
+    body: JSON.stringify({
+      name: viewer.name,
+      email: viewer.email,
+      role: 'viewer',
+      status: 'active',
+      device_ids: [deviceId],
+    }),
+  });
+  assert.equal(approveViewer.ok, true);
+  assert.deepEqual(approveViewer.data.user.device_ids, [deviceId]);
+
+  const viewerLogin = await request('/api/auth/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email: 'viewer@example.com', password: 'viewerpass123' }),
+  });
+  assert.equal(viewerLogin.ok, true);
+  assert.equal(viewerLogin.data.user.role, 'viewer');
+  assert.equal(viewerLogin.data.user.status, 'active');
+
+  const viewerHeaders = {
+    Authorization: `Bearer ${viewerLogin.data.token}`,
+    'Content-Type': 'application/json',
+  };
+
+  const viewerDashboard = await request('/api/analytics/dashboard', {
+    headers: { Authorization: viewerHeaders.Authorization },
+  });
+  assert.equal(viewerDashboard.ok, true);
+  assert.equal(viewerDashboard.data.canManage, false);
+  assert.equal(viewerDashboard.data.deviceStats.total, 1);
+  assert.equal(viewerDashboard.data.recentDevices.length, 1);
+
+  const viewerDevices = await request('/api/devices', {
+    headers: { Authorization: viewerHeaders.Authorization },
+  });
+  assert.equal(viewerDevices.ok, true);
+  assert.equal(viewerDevices.data.devices.length, 1);
+  assert.equal(viewerDevices.data.devices[0].id, deviceId);
+
+  const viewerForbiddenGroups = await request('/api/groups', {
+    headers: { Authorization: viewerHeaders.Authorization },
+  });
+  assert.equal(viewerForbiddenGroups.status, 403);
+
+  const viewerForbiddenCommand = await request(`/api/devices/${deviceId}/command`, {
+    method: 'POST',
+    headers: viewerHeaders,
+    body: JSON.stringify({ command: 'refresh' }),
+  });
+  assert.equal(viewerForbiddenCommand.status, 403);
 });

@@ -43,25 +43,32 @@ export default function Dashboard() {
 
   if (!data) return <DashboardSkeleton />;
 
-  const { deviceStats, contentStats, storageUsed, recentDevices } = data;
+  const { deviceStats, contentStats, storageUsed, recentDevices, canManage } = data;
 
-  const stats = [
-    { label: 'Total Displays', value: deviceStats.total, icon: Monitor, color: 'text-accent', bg: 'bg-accent/10' },
-    { label: 'Online Now', value: deviceStats.online, icon: Activity, color: 'text-emerald-400', bg: 'bg-emerald-400/10' },
-    { label: 'Assets', value: contentStats.assets, icon: Image, color: 'text-amber-400', bg: 'bg-amber-400/10' },
-    { label: 'Playlists', value: contentStats.playlists, icon: ListVideo, color: 'text-violet-400', bg: 'bg-violet-400/10' },
-    { label: 'Schedules', value: contentStats.schedules, icon: Calendar, color: 'text-cyan-400', bg: 'bg-cyan-400/10' },
-    { label: 'Storage', value: formatBytes(storageUsed), icon: HardDrive, color: 'text-pink-400', bg: 'bg-pink-400/10' },
-  ];
+  const stats = canManage
+    ? [
+        { label: 'Total Displays', value: deviceStats.total, icon: Monitor, color: 'text-accent', bg: 'bg-accent/10' },
+        { label: 'Online Now', value: deviceStats.online, icon: Activity, color: 'text-emerald-400', bg: 'bg-emerald-400/10' },
+        { label: 'Assets', value: contentStats.assets, icon: Image, color: 'text-amber-400', bg: 'bg-amber-400/10' },
+        { label: 'Playlists', value: contentStats.playlists, icon: ListVideo, color: 'text-violet-400', bg: 'bg-violet-400/10' },
+        { label: 'Schedules', value: contentStats.schedules, icon: Calendar, color: 'text-cyan-400', bg: 'bg-cyan-400/10' },
+        { label: 'Storage', value: formatBytes(storageUsed), icon: HardDrive, color: 'text-pink-400', bg: 'bg-pink-400/10' },
+      ]
+    : [
+        { label: 'Assigned Displays', value: deviceStats.total, icon: Monitor, color: 'text-accent', bg: 'bg-accent/10' },
+        { label: 'Online Now', value: deviceStats.online, icon: Activity, color: 'text-emerald-400', bg: 'bg-emerald-400/10' },
+      ];
 
   return (
     <div className="space-y-6">
       <div>
         <h1 className="text-2xl font-bold text-zinc-100">Dashboard</h1>
-        <p className="text-sm text-zinc-500 mt-1">Overview of your digital signage network</p>
+        <p className="text-sm text-zinc-500 mt-1">
+          {canManage ? 'Overview of your digital signage network' : 'View the displays assigned to your account'}
+        </p>
       </div>
 
-      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+      <div className={`grid gap-3 ${canManage ? 'grid-cols-2 md:grid-cols-3 lg:grid-cols-6' : 'grid-cols-2 md:grid-cols-2 max-w-xl'}`}>
         {stats.map((s) => (
           <div key={s.label} className="stat-card group">
             <div className={`w-9 h-9 rounded-xl ${s.bg} flex items-center justify-center`}>
@@ -73,7 +80,7 @@ export default function Dashboard() {
         ))}
       </div>
 
-      <div className="grid lg:grid-cols-3 gap-4">
+      <div className={`grid gap-4 ${canManage ? 'lg:grid-cols-3' : 'lg:grid-cols-2'}`}>
         <div className="lg:col-span-2 card">
           <div className="flex items-center justify-between mb-4">
             <h2 className="text-sm font-semibold text-zinc-200">Displays</h2>
@@ -123,59 +130,74 @@ export default function Dashboard() {
         </div>
 
         <div className="card">
-          <h2 className="text-sm font-semibold text-zinc-200 mb-4">Quick Actions</h2>
-          <div className="space-y-2">
-            <Link to="/assets" className="flex items-center gap-3 p-3 rounded-lg bg-surface-overlay hover:bg-surface-hover transition-colors">
-              <Image size={18} className="text-amber-400" />
-              <span className="text-sm text-zinc-300">Upload Content</span>
-            </Link>
-            <Link to="/playlists" className="flex items-center gap-3 p-3 rounded-lg bg-surface-overlay hover:bg-surface-hover transition-colors">
-              <ListVideo size={18} className="text-violet-400" />
-              <span className="text-sm text-zinc-300">Create Playlist</span>
-            </Link>
-            <Link to="/schedules" className="flex items-center gap-3 p-3 rounded-lg bg-surface-overlay hover:bg-surface-hover transition-colors">
-              <Calendar size={18} className="text-cyan-400" />
-              <span className="text-sm text-zinc-300">Add Schedule</span>
-            </Link>
-            <Link to="/devices" className="flex items-center gap-3 p-3 rounded-lg bg-surface-overlay hover:bg-surface-hover transition-colors">
-              <Monitor size={18} className="text-accent" />
-              <span className="text-sm text-zinc-300">Manage Displays</span>
-            </Link>
-          </div>
+          <h2 className="text-sm font-semibold text-zinc-200 mb-4">
+            {canManage ? 'Quick Actions' : 'Account Scope'}
+          </h2>
+          {canManage ? (
+            <>
+              <div className="space-y-2">
+                <Link to="/assets" className="flex items-center gap-3 p-3 rounded-lg bg-surface-overlay hover:bg-surface-hover transition-colors">
+                  <Image size={18} className="text-amber-400" />
+                  <span className="text-sm text-zinc-300">Upload Content</span>
+                </Link>
+                <Link to="/playlists" className="flex items-center gap-3 p-3 rounded-lg bg-surface-overlay hover:bg-surface-hover transition-colors">
+                  <ListVideo size={18} className="text-violet-400" />
+                  <span className="text-sm text-zinc-300">Create Playlist</span>
+                </Link>
+                <Link to="/schedules" className="flex items-center gap-3 p-3 rounded-lg bg-surface-overlay hover:bg-surface-hover transition-colors">
+                  <Calendar size={18} className="text-cyan-400" />
+                  <span className="text-sm text-zinc-300">Add Schedule</span>
+                </Link>
+                <Link to="/devices" className="flex items-center gap-3 p-3 rounded-lg bg-surface-overlay hover:bg-surface-hover transition-colors">
+                  <Monitor size={18} className="text-accent" />
+                  <span className="text-sm text-zinc-300">Manage Displays</span>
+                </Link>
+              </div>
 
-          <div className="mt-6 pt-4 border-t border-surface-border">
-            <h3 className="text-xs font-medium text-zinc-500 mb-3 uppercase tracking-wider">Network Health</h3>
-            <div className="space-y-3">
-              <div>
-                <div className="flex justify-between text-xs mb-1">
-                  <span className="text-zinc-400">Online</span>
-                  <span className="text-emerald-400">
-                    {deviceStats.total > 0 ? Math.round((deviceStats.online / deviceStats.total) * 100) : 0}%
-                  </span>
-                </div>
-                <div className="h-1.5 bg-surface-overlay rounded-full overflow-hidden">
-                  <div
-                    className="h-full bg-emerald-500 rounded-full transition-all duration-700"
-                    style={{ width: `${deviceStats.total > 0 ? (deviceStats.online / deviceStats.total) * 100 : 0}%` }}
-                  />
+              <div className="mt-6 pt-4 border-t border-surface-border">
+                <h3 className="text-xs font-medium text-zinc-500 mb-3 uppercase tracking-wider">Network Health</h3>
+                <div className="space-y-3">
+                  <div>
+                    <div className="flex justify-between text-xs mb-1">
+                      <span className="text-zinc-400">Online</span>
+                      <span className="text-emerald-400">
+                        {deviceStats.total > 0 ? Math.round((deviceStats.online / deviceStats.total) * 100) : 0}%
+                      </span>
+                    </div>
+                    <div className="h-1.5 bg-surface-overlay rounded-full overflow-hidden">
+                      <div
+                        className="h-full bg-emerald-500 rounded-full transition-all duration-700"
+                        style={{ width: `${deviceStats.total > 0 ? (deviceStats.online / deviceStats.total) * 100 : 0}%` }}
+                      />
+                    </div>
+                  </div>
+                  {deviceStats.error > 0 && (
+                    <div>
+                      <div className="flex justify-between text-xs mb-1">
+                        <span className="text-zinc-400">Errors</span>
+                        <span className="text-red-400">{deviceStats.error}</span>
+                      </div>
+                      <div className="h-1.5 bg-surface-overlay rounded-full overflow-hidden">
+                        <div
+                          className="h-full bg-red-500 rounded-full"
+                          style={{ width: `${(deviceStats.error / deviceStats.total) * 100}%` }}
+                        />
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
-              {deviceStats.error > 0 && (
-                <div>
-                  <div className="flex justify-between text-xs mb-1">
-                    <span className="text-zinc-400">Errors</span>
-                    <span className="text-red-400">{deviceStats.error}</span>
-                  </div>
-                  <div className="h-1.5 bg-surface-overlay rounded-full overflow-hidden">
-                    <div
-                      className="h-full bg-red-500 rounded-full"
-                      style={{ width: `${(deviceStats.error / deviceStats.total) * 100}%` }}
-                    />
-                  </div>
-                </div>
-              )}
+            </>
+          ) : (
+            <div className="space-y-3 text-sm text-zinc-400">
+              <p>
+                You have read-only access to the displays an administrator assigned to you.
+              </p>
+              <p>
+                Need more displays or permissions? Contact an admin to update your account access.
+              </p>
             </div>
-          </div>
+          )}
         </div>
       </div>
     </div>

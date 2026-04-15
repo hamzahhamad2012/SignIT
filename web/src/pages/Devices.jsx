@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '../api/client';
 import { useSocket } from '../hooks/useSocket';
+import { useAuth } from '../context/AuthContext';
 import StatusBadge from '../components/StatusBadge';
 import EmptyState from '../components/EmptyState';
 import AddDisplayWizard from '../components/AddDisplayWizard';
@@ -22,12 +23,14 @@ function timeAgo(dateStr) {
 }
 
 export default function Devices() {
+  const { user } = useAuth();
   const [devices, setDevices] = useState([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [filterStatus, setFilterStatus] = useState('');
   const [wizardOpen, setWizardOpen] = useState(false);
   const { on } = useSocket();
+  const canManage = ['admin', 'editor'].includes(user?.role);
 
   const fetchDevices = () => {
     const params = new URLSearchParams();
@@ -55,9 +58,11 @@ export default function Devices() {
           <button onClick={fetchDevices} className="btn-secondary">
             <RefreshCw size={15} /> Refresh
           </button>
-          <button onClick={() => setWizardOpen(true)} className="btn-primary">
-            <Plus size={15} /> Add Display
-          </button>
+          {canManage && (
+            <button onClick={() => setWizardOpen(true)} className="btn-primary">
+              <Plus size={15} /> Add Display
+            </button>
+          )}
         </div>
       </div>
 
@@ -164,11 +169,13 @@ export default function Devices() {
         </div>
       )}
 
-      <AddDisplayWizard
-        open={wizardOpen}
-        onClose={() => setWizardOpen(false)}
-        onComplete={fetchDevices}
-      />
+      {canManage && (
+        <AddDisplayWizard
+          open={wizardOpen}
+          onClose={() => setWizardOpen(false)}
+          onComplete={fetchDevices}
+        />
+      )}
     </div>
   );
 }

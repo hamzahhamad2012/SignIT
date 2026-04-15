@@ -1,8 +1,10 @@
 import { Router } from 'express';
 import db from '../db/index.js';
-import { authenticateToken } from '../middleware/auth.js';
+import { authenticateToken, requireManagementAccess } from '../middleware/auth.js';
 
 const router = Router();
+
+router.use(authenticateToken, requireManagementAccess);
 
 const BUILTIN_TEMPLATES = [
   {
@@ -94,7 +96,7 @@ const BUILTIN_TEMPLATES = [
   },
 ];
 
-router.get('/', authenticateToken, (req, res) => {
+router.get('/', (req, res) => {
   const { category } = req.query;
   let query = 'SELECT id, name, category, thumbnail, config, is_builtin, created_at FROM templates WHERE 1=1';
   const params = [];
@@ -105,14 +107,14 @@ router.get('/', authenticateToken, (req, res) => {
   res.json({ templates });
 });
 
-router.get('/:id', authenticateToken, (req, res) => {
+router.get('/:id', (req, res) => {
   const template = db.prepare('SELECT * FROM templates WHERE id = ?').get(req.params.id);
   if (!template) return res.status(404).json({ error: 'Template not found' });
   template.config = JSON.parse(template.config || '{}');
   res.json({ template });
 });
 
-router.post('/seed-builtins', authenticateToken, (req, res) => {
+router.post('/seed-builtins', (req, res) => {
   const insert = db.prepare(`
     INSERT OR IGNORE INTO templates (name, category, html_content, config, is_builtin)
     VALUES (?, ?, ?, ?, 1)
@@ -128,7 +130,7 @@ router.post('/seed-builtins', authenticateToken, (req, res) => {
   res.json({ success: true, added: count });
 });
 
-router.post('/', authenticateToken, (req, res) => {
+router.post('/', (req, res) => {
   const { name, category, html_content, config } = req.body;
   if (!name || !html_content) return res.status(400).json({ error: 'Name and HTML content required' });
 
@@ -141,7 +143,7 @@ router.post('/', authenticateToken, (req, res) => {
   res.status(201).json({ template });
 });
 
-router.delete('/:id', authenticateToken, (req, res) => {
+router.delete('/:id', (req, res) => {
   const result = db.prepare('DELETE FROM templates WHERE id = ?').run(req.params.id);
   if (result.changes === 0) return res.status(404).json({ error: 'Template not found' });
   res.json({ success: true });

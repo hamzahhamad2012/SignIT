@@ -5,9 +5,19 @@ export const schema = `
     password TEXT NOT NULL,
     name TEXT NOT NULL,
     role TEXT DEFAULT 'admin' CHECK(role IN ('admin','editor','viewer')),
+    status TEXT DEFAULT 'active' CHECK(status IN ('pending','active','disabled')),
+    approved_at DATETIME,
+    approved_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
     avatar TEXT,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
+
+  CREATE TABLE IF NOT EXISTS user_device_permissions (
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    device_id TEXT NOT NULL REFERENCES devices(id) ON DELETE CASCADE,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (user_id, device_id)
   );
 
   CREATE TABLE IF NOT EXISTS groups (
@@ -190,6 +200,7 @@ export const schema = `
 
   CREATE INDEX IF NOT EXISTS idx_devices_group ON devices(group_id);
   CREATE INDEX IF NOT EXISTS idx_devices_status ON devices(status);
+  CREATE INDEX IF NOT EXISTS idx_users_status ON users(status);
   CREATE INDEX IF NOT EXISTS idx_playlist_items_playlist ON playlist_items(playlist_id);
   CREATE INDEX IF NOT EXISTS idx_schedules_playlist ON schedules(playlist_id);
   CREATE INDEX IF NOT EXISTS idx_schedules_active ON schedules(is_active);
@@ -197,4 +208,6 @@ export const schema = `
   CREATE INDEX IF NOT EXISTS idx_wall_screens_wall ON wall_screens(wall_id);
   CREATE INDEX IF NOT EXISTS idx_widgets_type ON widgets(type);
   CREATE INDEX IF NOT EXISTS idx_pairing_tokens_code ON pairing_tokens(code);
+  CREATE INDEX IF NOT EXISTS idx_user_device_permissions_user ON user_device_permissions(user_id);
+  CREATE INDEX IF NOT EXISTS idx_user_device_permissions_device ON user_device_permissions(device_id);
 `;

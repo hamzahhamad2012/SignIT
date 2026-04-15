@@ -1,10 +1,12 @@
 import { Router } from 'express';
 import db from '../db/index.js';
-import { authenticateToken } from '../middleware/auth.js';
+import { authenticateToken, requireManagementAccess } from '../middleware/auth.js';
 
 const router = Router();
 
-router.get('/', authenticateToken, (req, res) => {
+router.use(authenticateToken, requireManagementAccess);
+
+router.get('/', (req, res) => {
   const walls = db.prepare(`
     SELECT dw.*, COUNT(ws.id) as screen_count
     FROM display_walls dw
@@ -15,7 +17,7 @@ router.get('/', authenticateToken, (req, res) => {
   res.json({ walls });
 });
 
-router.get('/:id', authenticateToken, (req, res) => {
+router.get('/:id', (req, res) => {
   const wall = db.prepare('SELECT * FROM display_walls WHERE id = ?').get(req.params.id);
   if (!wall) return res.status(404).json({ error: 'Wall not found' });
 
@@ -35,7 +37,7 @@ router.get('/:id', authenticateToken, (req, res) => {
   res.json({ wall });
 });
 
-router.post('/', authenticateToken, (req, res) => {
+router.post('/', (req, res) => {
   const { name, description, cols, rows, bezel_mm, bg_color } = req.body;
   if (!name) return res.status(400).json({ error: 'Name required' });
 
@@ -49,7 +51,7 @@ router.post('/', authenticateToken, (req, res) => {
   res.status(201).json({ wall });
 });
 
-router.put('/:id', authenticateToken, (req, res) => {
+router.put('/:id', (req, res) => {
   const { name, description, cols, rows, bezel_mm, bg_color } = req.body;
   const updates = ['updated_at = CURRENT_TIMESTAMP'];
   const params = [];
@@ -68,13 +70,13 @@ router.put('/:id', authenticateToken, (req, res) => {
   res.json({ wall });
 });
 
-router.delete('/:id', authenticateToken, (req, res) => {
+router.delete('/:id', (req, res) => {
   const result = db.prepare('DELETE FROM display_walls WHERE id = ?').run(req.params.id);
   if (result.changes === 0) return res.status(404).json({ error: 'Wall not found' });
   res.json({ success: true });
 });
 
-router.put('/:id/screens', authenticateToken, (req, res) => {
+router.put('/:id/screens', (req, res) => {
   const { screens } = req.body;
   if (!Array.isArray(screens)) return res.status(400).json({ error: 'Screens array required' });
 

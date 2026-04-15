@@ -5,7 +5,7 @@ import { join, extname } from 'path';
 import { existsSync, unlinkSync, mkdirSync, statSync } from 'fs';
 import { nanoid } from 'nanoid';
 import db from '../db/index.js';
-import { authenticateToken } from '../middleware/auth.js';
+import { authenticateToken, requireManagementAccess } from '../middleware/auth.js';
 import { transcodeVideo, getVideoMeta, convertPdfToImages, convertImage } from '../services/transcode.js';
 import { UPLOAD_DIR } from '../config/paths.js';
 
@@ -45,6 +45,8 @@ const upload = multer({
 
 const router = Router();
 
+router.use(authenticateToken, requireManagementAccess);
+
 async function generateThumbnail(filepath, filename) {
   try {
     const thumbName = `thumb_${filename.replace(extname(filename), '.jpg')}`;
@@ -59,7 +61,7 @@ async function generateThumbnail(filepath, filename) {
   }
 }
 
-router.get('/', authenticateToken, (req, res) => {
+router.get('/', (req, res) => {
   const { type, search } = req.query;
   let query = 'SELECT * FROM assets WHERE 1=1';
   const params = [];
@@ -73,21 +75,21 @@ router.get('/', authenticateToken, (req, res) => {
   res.json({ assets });
 });
 
-router.get('/stats', authenticateToken, (req, res) => {
+router.get('/stats', (req, res) => {
   const total = db.prepare('SELECT COUNT(*) as count FROM assets').get().count;
   const byType = db.prepare('SELECT type, COUNT(*) as count FROM assets GROUP BY type').all();
   const totalSize = db.prepare('SELECT COALESCE(SUM(size), 0) as total FROM assets').get().total;
   res.json({ total, byType, totalSize });
 });
 
-router.get('/:id', authenticateToken, (req, res) => {
+router.get('/:id', (req, res) => {
   const asset = db.prepare('SELECT * FROM assets WHERE id = ?').get(req.params.id);
   if (!asset) return res.status(404).json({ error: 'Asset not found' });
   asset.metadata = JSON.parse(asset.metadata || '{}');
   res.json({ asset });
 });
 
-router.post('/', authenticateToken, upload.single('file'), async (req, res) => {
+router.post('/', upload.single('file'), async (req, res) => {
   try {
     const { name, type: assetType, url } = req.body;
 
@@ -197,7 +199,7 @@ router.post('/', authenticateToken, upload.single('file'), async (req, res) => {
   }
 });
 
-router.put('/:id', authenticateToken, (req, res) => {
+router.put('/:id', (req, res) => {
   const { name, duration, metadata } = req.body;
   const asset = db.prepare('SELECT * FROM assets WHERE id = ?').get(req.params.id);
   if (!asset) return res.status(404).json({ error: 'Asset not found' });
@@ -217,7 +219,7 @@ router.put('/:id', authenticateToken, (req, res) => {
   res.json({ asset: updated });
 });
 
-router.delete('/:id', authenticateToken, (req, res) => {
+router.delete('/:id', (req, res) => {
   const asset = db.prepare('SELECT * FROM assets WHERE id = ?').get(req.params.id);
   if (!asset) return res.status(404).json({ error: 'Asset not found' });
 

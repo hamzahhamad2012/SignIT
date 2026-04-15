@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { Monitor, ArrowRight } from 'lucide-react';
 import toast from 'react-hot-toast';
@@ -47,7 +47,7 @@ export default function Login() {
               autoComplete="username"
               value={email}
               onChange={(e) => setEmail(e.target.value)}
-              placeholder="admin@signit.local"
+              placeholder="you@company.com"
               className="w-full"
               required
               autoFocus
@@ -75,8 +75,8 @@ export default function Login() {
           </button>
         </form>
 
-        <p className="text-center text-xs text-zinc-600 mt-6">
-          Default: admin@signit.local / admin123
+        <p className="text-center text-xs text-zinc-500 mt-6">
+          Need access? <Link to="/signup" className="text-accent hover:text-accent-hover">Request an account</Link>
         </p>
       </div>
     </div>

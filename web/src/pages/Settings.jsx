@@ -105,6 +105,10 @@ export default function Settings() {
             <span className="text-xs text-zinc-500">Role</span>
             <p className="text-zinc-300 capitalize">{user?.role}</p>
           </div>
+          <div>
+            <span className="text-xs text-zinc-500">Status</span>
+            <p className="text-zinc-300 capitalize">{user?.status}</p>
+          </div>
         </div>
       </div>
 

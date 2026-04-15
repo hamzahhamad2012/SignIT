@@ -5,16 +5,11 @@ initDatabase();
 
 const passwordHash = bcrypt.hashSync('admin123', 12);
 
-// Ensure default admin exists; if email already exists, reset password to default (recovery).
+// Ensure a default admin exists for first boot only.
 db.prepare(`
-  INSERT INTO users (email, password, name, role)
-  VALUES (?, ?, ?, ?)
-  ON CONFLICT(email) DO UPDATE SET
-    password = excluded.password,
-    name = excluded.name,
-    role = excluded.role,
-    updated_at = CURRENT_TIMESTAMP
-`).run('admin@signit.local', passwordHash, 'Administrator', 'admin');
+  INSERT OR IGNORE INTO users (email, password, name, role, status, approved_at)
+  VALUES (?, ?, ?, ?, ?, ?)
+`).run('admin@signit.local', passwordHash, 'Administrator', 'admin', 'active', new Date().toISOString());
 
 db.prepare(`
   INSERT OR IGNORE INTO groups (name, description, color)
@@ -27,5 +22,5 @@ db.prepare(`
 `).run('Welcome', 'Default welcome playlist', 'fullscreen');
 
 console.log('[Seed] Database seeded successfully');
-console.log('[Seed] Default admin: admin@signit.local / admin123');
+console.log('[Seed] Default admin ensured: admin@signit.local');
 process.exit(0);

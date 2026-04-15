@@ -3,7 +3,6 @@ import { io } from 'socket.io-client';
 
 // Singleton socket — lives for the entire session, never destroyed on unmount
 const socket = io(window.location.origin, {
-  query: { role: 'admin' },
   transports: ['websocket', 'polling'],
 });
 

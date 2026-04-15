@@ -1,21 +1,23 @@
 import { Router } from 'express';
 import { nanoid } from 'nanoid';
 import db from '../db/index.js';
-import { authenticateToken } from '../middleware/auth.js';
+import { authenticateToken, requireManagementAccess } from '../middleware/auth.js';
 import { refreshDevices } from '../services/schedulerRuntime.js';
+import { buildDeviceAccessClause, userCanAccessDevice } from '../services/userAccess.js';
 
 const router = Router();
 
 router.get('/', authenticateToken, (req, res) => {
   const { group_id, status, search } = req.query;
+  const access = buildDeviceAccessClause(req.user, 'd');
   let query = `
     SELECT d.*, g.name as group_name, p.name as playlist_name
     FROM devices d
     LEFT JOIN groups g ON g.id = d.group_id
     LEFT JOIN playlists p ON p.id = d.current_playlist_id
-    WHERE 1=1
+    WHERE ${access.sql}
   `;
-  const params = [];
+  const params = [...access.params];
 
   if (group_id) { query += ' AND d.group_id = ?'; params.push(group_id); }
   if (status) { query += ' AND d.status = ?'; params.push(status); }
@@ -33,15 +35,20 @@ router.get('/', authenticateToken, (req, res) => {
 });
 
 router.get('/stats', authenticateToken, (req, res) => {
-  const total = db.prepare('SELECT COUNT(*) as count FROM devices').get().count;
-  const online = db.prepare("SELECT COUNT(*) as count FROM devices WHERE status = 'online'").get().count;
-  const offline = db.prepare("SELECT COUNT(*) as count FROM devices WHERE status = 'offline'").get().count;
-  const errored = db.prepare("SELECT COUNT(*) as count FROM devices WHERE status = 'error'").get().count;
+  const access = buildDeviceAccessClause(req.user, 'd');
+  const total = db.prepare(`SELECT COUNT(*) as count FROM devices d WHERE ${access.sql}`).get(...access.params).count;
+  const online = db.prepare(`SELECT COUNT(*) as count FROM devices d WHERE ${access.sql} AND d.status = 'online'`).get(...access.params).count;
+  const offline = db.prepare(`SELECT COUNT(*) as count FROM devices d WHERE ${access.sql} AND d.status = 'offline'`).get(...access.params).count;
+  const errored = db.prepare(`SELECT COUNT(*) as count FROM devices d WHERE ${access.sql} AND d.status = 'error'`).get(...access.params).count;
 
   res.json({ total, online, offline, error: errored });
 });
 
 router.get('/:id', authenticateToken, (req, res) => {
+  if (!userCanAccessDevice(req.user, req.params.id)) {
+    return res.status(404).json({ error: 'Device not found' });
+  }
+
   const device = db.prepare(`
     SELECT d.*, g.name as group_name, p.name as playlist_name
     FROM devices d
@@ -116,7 +123,7 @@ router.post('/register', (req, res) => {
   res.status(201).json({ device, device_id: id, device_name: deviceName });
 });
 
-router.put('/:id', authenticateToken, (req, res) => {
+router.put('/:id', authenticateToken, requireManagementAccess, (req, res) => {
   const { name, group_id, orientation, assigned_playlist_id, settings, tags,
           location_name, location_address, location_city, location_state,
           location_zip, location_country, location_lat, location_lng, location_notes } = req.body;
@@ -167,13 +174,13 @@ router.put('/:id', authenticateToken, (req, res) => {
   res.json({ device: updated });
 });
 
-router.delete('/:id', authenticateToken, (req, res) => {
+router.delete('/:id', authenticateToken, requireManagementAccess, (req, res) => {
   const result = db.prepare('DELETE FROM devices WHERE id = ?').run(req.params.id);
   if (result.changes === 0) return res.status(404).json({ error: 'Device not found' });
   res.json({ success: true });
 });
 
-router.post('/:id/command', authenticateToken, (req, res) => {
+router.post('/:id/command', authenticateToken, requireManagementAccess, (req, res) => {
   const { command, params: cmdParams } = req.body;
   const device = db.prepare('SELECT * FROM devices WHERE id = ?').get(req.params.id);
   if (!device) return res.status(404).json({ error: 'Device not found' });

@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import db from '../db/index.js';
-import { authenticateToken } from '../middleware/auth.js';
+import { authenticateToken, requireManagementAccess } from '../middleware/auth.js';
 import { refreshDevicesForSchedules } from '../services/schedulerRuntime.js';
 
 const router = Router();
@@ -10,7 +10,9 @@ function toSqlBoolean(value) {
   return value ? 1 : 0;
 }
 
-router.get('/', authenticateToken, (req, res) => {
+router.use(authenticateToken, requireManagementAccess);
+
+router.get('/', (req, res) => {
   const schedules = db.prepare(`
     SELECT s.*, p.name as playlist_name,
            g.name as group_name, d.name as device_name
@@ -23,7 +25,7 @@ router.get('/', authenticateToken, (req, res) => {
   res.json({ schedules });
 });
 
-router.get('/:id', authenticateToken, (req, res) => {
+router.get('/:id', (req, res) => {
   const schedule = db.prepare(`
     SELECT s.*, p.name as playlist_name,
            g.name as group_name, d.name as device_name
@@ -37,7 +39,7 @@ router.get('/:id', authenticateToken, (req, res) => {
   res.json({ schedule });
 });
 
-router.post('/', authenticateToken, (req, res) => {
+router.post('/', (req, res) => {
   const { name, playlist_id, group_id, device_id, priority, start_date, end_date,
           start_time, end_time, days_of_week, is_active } = req.body;
 
@@ -61,7 +63,7 @@ router.post('/', authenticateToken, (req, res) => {
   res.status(201).json({ schedule });
 });
 
-router.put('/:id', authenticateToken, (req, res) => {
+router.put('/:id', (req, res) => {
   const existing = db.prepare('SELECT * FROM schedules WHERE id = ?').get(req.params.id);
   if (!existing) return res.status(404).json({ error: 'Schedule not found' });
 
@@ -86,7 +88,7 @@ router.put('/:id', authenticateToken, (req, res) => {
   res.json({ schedule });
 });
 
-router.delete('/:id', authenticateToken, (req, res) => {
+router.delete('/:id', (req, res) => {
   const schedule = db.prepare('SELECT * FROM schedules WHERE id = ?').get(req.params.id);
   if (!schedule) return res.status(404).json({ error: 'Schedule not found' });
 

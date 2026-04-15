@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback, useRef } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { api } from '../api/client';
 import { useSocket } from '../hooks/useSocket';
+import { useAuth } from '../context/AuthContext';
 import StatusBadge from '../components/StatusBadge';
 import Modal from '../components/Modal';
 import toast from 'react-hot-toast';
@@ -13,6 +14,7 @@ import {
 export default function DeviceDetail() {
   const { id } = useParams();
   const navigate = useNavigate();
+  const { user } = useAuth();
   const [device, setDevice] = useState(null);
   const [editing, setEditing] = useState(false);
   const [editName, setEditName] = useState('');
@@ -23,7 +25,8 @@ export default function DeviceDetail() {
   const [locationForm, setLocationForm] = useState({});
   const [pendingCmd, setPendingCmd] = useState(null);
   const cmdTimeout = useRef(null);
-  const { on, emit } = useSocket();
+  const { on } = useSocket();
+  const canManage = ['admin', 'editor'].includes(user?.role);
 
   useEffect(() => {
     api.get(`/devices/${id}`).then(d => {
@@ -39,9 +42,11 @@ export default function DeviceDetail() {
         location_notes: d.device.location_notes || '',
       });
     }).catch(() => navigate('/devices'));
-    api.get('/playlists').then(d => setPlaylists(d.playlists));
-    api.get('/groups').then(d => setGroups(d.groups));
-  }, [id]);
+    if (canManage) {
+      api.get('/playlists').then(d => setPlaylists(d.playlists));
+      api.get('/groups').then(d => setGroups(d.groups));
+    }
+  }, [id, canManage, navigate]);
 
   useEffect(() => {
     const unsubs = [];
@@ -173,9 +178,11 @@ export default function DeviceDetail() {
           ) : (
             <>
               <h1 className="text-2xl font-bold text-zinc-100">{device.name}</h1>
-              <button onClick={() => setEditing(true)} className="p-1.5 rounded-lg hover:bg-surface-hover text-zinc-500">
-                <Edit3 size={14} />
-              </button>
+              {canManage && (
+                <button onClick={() => setEditing(true)} className="p-1.5 rounded-lg hover:bg-surface-hover text-zinc-500">
+                  <Edit3 size={14} />
+                </button>
+              )}
             </>
           )}
           <StatusBadge status={device.status} />
@@ -223,20 +230,22 @@ export default function DeviceDetail() {
           <div className="card">
             <div className="flex items-center justify-between mb-4">
               <h2 className="text-sm font-semibold text-zinc-200">Screenshot</h2>
-              <button
-                onClick={() => sendCommand('screenshot')}
-                disabled={pendingCmd === 'screenshot'}
-                className="text-xs text-accent hover:underline flex items-center gap-1 disabled:opacity-50"
-              >
-                {pendingCmd === 'screenshot' ? (
-                  <><Loader2 size={12} className="animate-spin" /> Capturing...</>
-                ) : (
-                  <><Camera size={12} /> Capture</>
-                )}
-              </button>
+              {canManage && (
+                <button
+                  onClick={() => sendCommand('screenshot')}
+                  disabled={pendingCmd === 'screenshot'}
+                  className="text-xs text-accent hover:underline flex items-center gap-1 disabled:opacity-50"
+                >
+                  {pendingCmd === 'screenshot' ? (
+                    <><Loader2 size={12} className="animate-spin" /> Capturing...</>
+                  ) : (
+                    <><Camera size={12} /> Capture</>
+                  )}
+                </button>
+              )}
             </div>
             <div className="relative">
-              {pendingCmd === 'screenshot' && (
+              {canManage && pendingCmd === 'screenshot' && (
                 <div className="absolute inset-0 z-10 rounded-lg bg-black/60 flex items-center justify-center">
                   <div className="flex flex-col items-center gap-2">
                     <Loader2 size={24} className="animate-spin text-accent" />
@@ -258,34 +267,44 @@ export default function DeviceDetail() {
         <div className="space-y-4">
           <div className="card">
             <h2 className="text-sm font-semibold text-zinc-200 mb-3">Assigned Playlist</h2>
-            <select
-              value={device.assigned_playlist_id || ''}
-              onChange={(e) => handleAssignPlaylist(e.target.value ? parseInt(e.target.value) : null)}
-              className="w-full"
-            >
-              <option value="">None (use schedule)</option>
-              {playlists.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-            </select>
-            {device.assigned_playlist_id && (
-              <button
-                onClick={() => sendCommand('refresh')}
-                className="btn-primary w-full mt-2 text-xs"
-              >
-                <Send size={13} /> Push Now
-              </button>
+            {canManage ? (
+              <>
+                <select
+                  value={device.assigned_playlist_id || ''}
+                  onChange={(e) => handleAssignPlaylist(e.target.value ? parseInt(e.target.value) : null)}
+                  className="w-full"
+                >
+                  <option value="">None (use schedule)</option>
+                  {playlists.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                </select>
+                {device.assigned_playlist_id && (
+                  <button
+                    onClick={() => sendCommand('refresh')}
+                    className="btn-primary w-full mt-2 text-xs"
+                  >
+                    <Send size={13} /> Push Now
+                  </button>
+                )}
+              </>
+            ) : (
+              <p className="text-sm text-zinc-300">{device.playlist_name || 'None (uses schedule or group default)'}</p>
             )}
           </div>
 
           <div className="card">
             <h2 className="text-sm font-semibold text-zinc-200 mb-3">Group</h2>
-            <select
-              value={device.group_id || ''}
-              onChange={(e) => handleAssignGroup(e.target.value ? parseInt(e.target.value) : null)}
-              className="w-full"
-            >
-              <option value="">No group</option>
-              {groups.map(g => <option key={g.id} value={g.id}>{g.name}</option>)}
-            </select>
+            {canManage ? (
+              <select
+                value={device.group_id || ''}
+                onChange={(e) => handleAssignGroup(e.target.value ? parseInt(e.target.value) : null)}
+                className="w-full"
+              >
+                <option value="">No group</option>
+                {groups.map(g => <option key={g.id} value={g.id}>{g.name}</option>)}
+              </select>
+            ) : (
+              <p className="text-sm text-zinc-300">{device.group_name || 'No group'}</p>
+            )}
           </div>
 
           <div className="card">
@@ -293,13 +312,13 @@ export default function DeviceDetail() {
               <h2 className="text-sm font-semibold text-zinc-200 flex items-center gap-1.5">
                 <MapPin size={14} className="text-emerald-400" /> Location
               </h2>
-              {!editingLocation && (
+              {canManage && !editingLocation && (
                 <button onClick={() => setEditingLocation(true)} className="text-xs text-accent hover:underline">
                   {device.location_name ? 'Edit' : 'Add'}
                 </button>
               )}
             </div>
-            {editingLocation ? (
+            {canManage && editingLocation ? (
               <div className="space-y-2">
                 <input type="text" placeholder="Location name" value={locationForm.location_name}
                   onChange={(e) => setLocationForm(f => ({ ...f, location_name: e.target.value }))} className="w-full text-xs" />
@@ -341,39 +360,43 @@ export default function DeviceDetail() {
             )}
           </div>
 
-          <div className="card">
-            <h2 className="text-sm font-semibold text-zinc-200 mb-3">Remote Commands</h2>
-            <div className="grid grid-cols-2 gap-2">
-              {[
-                { cmd: 'reboot', label: 'Reboot', Icon: Power },
-                { cmd: 'restart_player', label: 'Restart', Icon: RotateCw },
-                { cmd: 'screenshot', label: 'Screenshot', Icon: Camera },
-                { cmd: 'refresh', label: 'Refresh', Icon: RotateCw },
-              ].map(({ cmd, label, Icon }) => (
-                <button
-                  key={cmd}
-                  onClick={() => sendCommand(cmd)}
-                  disabled={!!pendingCmd}
-                  className="btn-secondary text-xs disabled:opacity-50"
-                >
-                  {pendingCmd === cmd ? (
-                    <Loader2 size={13} className="animate-spin" />
-                  ) : (
-                    <Icon size={13} />
-                  )}
-                  {pendingCmd === cmd ? 'Sending...' : label}
-                </button>
-              ))}
-            </div>
-          </div>
+          {canManage && (
+            <>
+              <div className="card">
+                <h2 className="text-sm font-semibold text-zinc-200 mb-3">Remote Commands</h2>
+                <div className="grid grid-cols-2 gap-2">
+                  {[
+                    { cmd: 'reboot', label: 'Reboot', Icon: Power },
+                    { cmd: 'restart_player', label: 'Restart', Icon: RotateCw },
+                    { cmd: 'screenshot', label: 'Screenshot', Icon: Camera },
+                    { cmd: 'refresh', label: 'Refresh', Icon: RotateCw },
+                  ].map(({ cmd, label, Icon }) => (
+                    <button
+                      key={cmd}
+                      onClick={() => sendCommand(cmd)}
+                      disabled={!!pendingCmd}
+                      className="btn-secondary text-xs disabled:opacity-50"
+                    >
+                      {pendingCmd === cmd ? (
+                        <Loader2 size={13} className="animate-spin" />
+                      ) : (
+                        <Icon size={13} />
+                      )}
+                      {pendingCmd === cmd ? 'Sending...' : label}
+                    </button>
+                  ))}
+                </div>
+              </div>
 
-          <button onClick={() => setShowDelete(true)} className="btn-danger w-full text-xs">
-            <Trash2 size={14} /> Remove Device
-          </button>
+              <button onClick={() => setShowDelete(true)} className="btn-danger w-full text-xs">
+                <Trash2 size={14} /> Remove Device
+              </button>
+            </>
+          )}
         </div>
       </div>
 
-      <Modal open={showDelete} onClose={() => setShowDelete(false)} title="Remove Device">
+      <Modal open={canManage && showDelete} onClose={() => setShowDelete(false)} title="Remove Device">
         <p className="text-sm text-zinc-400 mb-4">
           Are you sure you want to remove <strong className="text-zinc-200">{device.name}</strong>? This action cannot be undone.
         </p>

@@ -11,7 +11,7 @@ if (process.env.NODE_ENV === 'production' && JWT_SECRET === DEFAULT_JWT_SECRET) 
 
 export function generateToken(user) {
   return jwt.sign(
-    { id: user.id, email: user.email, role: user.role },
+    { id: user.id, email: user.email, role: user.role, status: user.status },
     JWT_SECRET,
     { expiresIn: JWT_EXPIRY }
   );
@@ -27,8 +27,18 @@ export function authenticateToken(req, res, next) {
 
   try {
     const decoded = jwt.verify(token, JWT_SECRET);
-    const user = db.prepare('SELECT id, email, name, role FROM users WHERE id = ?').get(decoded.id);
+    const user = db.prepare(`
+      SELECT id, email, name, role, status
+      FROM users
+      WHERE id = ?
+    `).get(decoded.id);
     if (!user) return res.status(401).json({ error: 'User not found' });
+    if (user.status === 'pending') {
+      return res.status(403).json({ error: 'Your account is pending approval' });
+    }
+    if (user.status === 'disabled') {
+      return res.status(403).json({ error: 'Your account has been disabled' });
+    }
     req.user = user;
     next();
   } catch {
@@ -57,3 +67,6 @@ export function requireRole(...roles) {
     next();
   };
 }
+
+export const requireManagementAccess = requireRole('admin', 'editor');
+export const requireAdmin = requireRole('admin');

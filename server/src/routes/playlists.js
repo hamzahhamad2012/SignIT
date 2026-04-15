@@ -1,10 +1,12 @@
 import { Router } from 'express';
 import db from '../db/index.js';
-import { authenticateToken } from '../middleware/auth.js';
+import { authenticateToken, requireManagementAccess } from '../middleware/auth.js';
 
 const router = Router();
 
-router.get('/', authenticateToken, (req, res) => {
+router.use(authenticateToken, requireManagementAccess);
+
+router.get('/', (req, res) => {
   const { search } = req.query;
   let query = `
     SELECT p.*, COUNT(pi.id) as item_count
@@ -23,7 +25,7 @@ router.get('/', authenticateToken, (req, res) => {
   res.json({ playlists });
 });
 
-router.get('/:id', authenticateToken, (req, res) => {
+router.get('/:id', (req, res) => {
   const playlist = db.prepare('SELECT * FROM playlists WHERE id = ?').get(req.params.id);
   if (!playlist) return res.status(404).json({ error: 'Playlist not found' });
 
@@ -50,7 +52,7 @@ router.get('/:id', authenticateToken, (req, res) => {
   res.json({ playlist });
 });
 
-router.post('/', authenticateToken, (req, res) => {
+router.post('/', (req, res) => {
   const { name, description, layout, layout_config, transition, transition_duration, bg_color } = req.body;
   if (!name) return res.status(400).json({ error: 'Name required' });
 
@@ -73,7 +75,7 @@ router.post('/', authenticateToken, (req, res) => {
   res.status(201).json({ playlist });
 });
 
-router.put('/:id', authenticateToken, (req, res) => {
+router.put('/:id', (req, res) => {
   const { name, description, layout, layout_config, transition, transition_duration, bg_color } = req.body;
   const playlist = db.prepare('SELECT * FROM playlists WHERE id = ?').get(req.params.id);
   if (!playlist) return res.status(404).json({ error: 'Playlist not found' });
@@ -97,13 +99,13 @@ router.put('/:id', authenticateToken, (req, res) => {
   res.json({ playlist: updated });
 });
 
-router.delete('/:id', authenticateToken, (req, res) => {
+router.delete('/:id', (req, res) => {
   const result = db.prepare('DELETE FROM playlists WHERE id = ?').run(req.params.id);
   if (result.changes === 0) return res.status(404).json({ error: 'Playlist not found' });
   res.json({ success: true });
 });
 
-router.put('/:id/items', authenticateToken, (req, res) => {
+router.put('/:id/items', (req, res) => {
   const { items } = req.body;
   if (!Array.isArray(items)) return res.status(400).json({ error: 'Items array required' });
 
@@ -153,7 +155,7 @@ router.put('/:id/items', authenticateToken, (req, res) => {
   res.json({ items: updatedItems });
 });
 
-router.post('/:id/deploy', authenticateToken, (req, res) => {
+router.post('/:id/deploy', (req, res) => {
   const { device_ids, group_id } = req.body;
   const playlist = db.prepare('SELECT * FROM playlists WHERE id = ?').get(req.params.id);
   if (!playlist) return res.status(404).json({ error: 'Playlist not found' });

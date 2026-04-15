@@ -1,11 +1,13 @@
 import { Router } from 'express';
 import db from '../db/index.js';
-import { authenticateToken } from '../middleware/auth.js';
+import { authenticateToken, requireManagementAccess } from '../middleware/auth.js';
 import { refreshDevices } from '../services/schedulerRuntime.js';
 
 const router = Router();
 
-router.get('/', authenticateToken, (req, res) => {
+router.use(authenticateToken, requireManagementAccess);
+
+router.get('/', (req, res) => {
   const groups = db.prepare(`
     SELECT g.*, COUNT(d.id) as device_count, p.name as playlist_name
     FROM groups g
@@ -17,7 +19,7 @@ router.get('/', authenticateToken, (req, res) => {
   res.json({ groups });
 });
 
-router.get('/:id', authenticateToken, (req, res) => {
+router.get('/:id', (req, res) => {
   const group = db.prepare(`
     SELECT g.*, p.name as playlist_name
     FROM groups g
@@ -32,7 +34,7 @@ router.get('/:id', authenticateToken, (req, res) => {
   res.json({ group });
 });
 
-router.post('/', authenticateToken, (req, res) => {
+router.post('/', (req, res) => {
   const { name, description, color, default_playlist_id } = req.body;
   if (!name) return res.status(400).json({ error: 'Name required' });
 
@@ -45,7 +47,7 @@ router.post('/', authenticateToken, (req, res) => {
   res.status(201).json({ group });
 });
 
-router.put('/:id', authenticateToken, (req, res) => {
+router.put('/:id', (req, res) => {
   const { name, description, color, default_playlist_id } = req.body;
   const updates = [];
   const params = [];
@@ -69,7 +71,7 @@ router.put('/:id', authenticateToken, (req, res) => {
   res.json({ group });
 });
 
-router.delete('/:id', authenticateToken, (req, res) => {
+router.delete('/:id', (req, res) => {
   db.prepare('UPDATE devices SET group_id = NULL WHERE group_id = ?').run(req.params.id);
   const result = db.prepare('DELETE FROM groups WHERE id = ?').run(req.params.id);
   if (result.changes === 0) return res.status(404).json({ error: 'Group not found' });

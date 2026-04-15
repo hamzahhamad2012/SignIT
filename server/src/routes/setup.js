@@ -5,7 +5,7 @@ import { dirname, join } from 'path';
 import { readFileSync, existsSync, readdirSync, statSync } from 'fs';
 import archiver from 'archiver';
 import db from '../db/index.js';
-import { authenticateToken } from '../middleware/auth.js';
+import { authenticateToken, requireManagementAccess } from '../middleware/auth.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const router = Router();
@@ -19,7 +19,7 @@ function generatePairingCode() {
 
 // --- Admin endpoints (require auth) ---
 
-router.post('/pairing-token', authenticateToken, (req, res) => {
+router.post('/pairing-token', authenticateToken, requireManagementAccess, (req, res) => {
   const { name, group_id, playlist_id, location_name, location_address,
           location_city, location_state, location_zip, location_country,
           expires_hours } = req.body;
@@ -57,7 +57,7 @@ router.post('/pairing-token', authenticateToken, (req, res) => {
   res.status(201).json({ token });
 });
 
-router.get('/pairing-tokens', authenticateToken, (req, res) => {
+router.get('/pairing-tokens', authenticateToken, requireManagementAccess, (req, res) => {
   const tokens = db.prepare(`
     SELECT pt.*, g.name as group_name, p.name as playlist_name, d.name as device_name
     FROM pairing_tokens pt
@@ -69,7 +69,7 @@ router.get('/pairing-tokens', authenticateToken, (req, res) => {
   res.json({ tokens });
 });
 
-router.delete('/pairing-token/:id', authenticateToken, (req, res) => {
+router.delete('/pairing-token/:id', authenticateToken, requireManagementAccess, (req, res) => {
   const result = db.prepare('DELETE FROM pairing_tokens WHERE id = ?').run(req.params.id);
   if (result.changes === 0) return res.status(404).json({ error: 'Token not found' });
   res.json({ success: true });
@@ -555,7 +555,7 @@ router.get('/player-file/setup_ui/:filename', (req, res) => {
 
 // --- Downloadable SD card provisioning zip ---
 
-router.get('/sdcard-zip', authenticateToken, (req, res) => {
+router.get('/sdcard-zip', authenticateToken, requireManagementAccess, (req, res) => {
   const serverUrl = `${req.protocol}://${req.get('host')}`;
   const playerDir = join(__dirname, '..', '..', '..', 'player');
 

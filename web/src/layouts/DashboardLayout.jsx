@@ -5,21 +5,22 @@ import { useSocket } from '../hooks/useSocket';
 import {
   LayoutDashboard, Monitor, Image, ListVideo, Calendar, FolderOpen,
   Settings, LogOut, ChevronLeft, Wifi, WifiOff, Menu,
-  LayoutGrid, Puzzle, BookTemplate, Download,
+  LayoutGrid, Puzzle, BookTemplate, Download, Users,
 } from 'lucide-react';
 
 const navItems = [
-  { to: '/', icon: LayoutDashboard, label: 'Dashboard', end: true },
-  { to: '/devices', icon: Monitor, label: 'Devices' },
-  { to: '/walls', icon: LayoutGrid, label: 'Display Walls' },
-  { to: '/assets', icon: Image, label: 'Assets' },
-  { to: '/playlists', icon: ListVideo, label: 'Playlists' },
-  { to: '/templates', icon: BookTemplate, label: 'Templates' },
-  { to: '/widgets', icon: Puzzle, label: 'Widgets' },
-  { to: '/schedules', icon: Calendar, label: 'Schedules' },
-  { to: '/groups', icon: FolderOpen, label: 'Groups' },
-  { to: '/downloads', icon: Download, label: 'Setup & Downloads' },
-  { to: '/settings', icon: Settings, label: 'Settings' },
+  { to: '/', icon: LayoutDashboard, label: 'Dashboard', end: true, roles: ['admin', 'editor', 'viewer'] },
+  { to: '/devices', icon: Monitor, label: 'Devices', roles: ['admin', 'editor', 'viewer'] },
+  { to: '/walls', icon: LayoutGrid, label: 'Display Walls', roles: ['admin', 'editor'] },
+  { to: '/assets', icon: Image, label: 'Assets', roles: ['admin', 'editor'] },
+  { to: '/playlists', icon: ListVideo, label: 'Playlists', roles: ['admin', 'editor'] },
+  { to: '/templates', icon: BookTemplate, label: 'Templates', roles: ['admin', 'editor'] },
+  { to: '/widgets', icon: Puzzle, label: 'Widgets', roles: ['admin', 'editor'] },
+  { to: '/schedules', icon: Calendar, label: 'Schedules', roles: ['admin', 'editor'] },
+  { to: '/groups', icon: FolderOpen, label: 'Groups', roles: ['admin', 'editor'] },
+  { to: '/users', icon: Users, label: 'Users', roles: ['admin'] },
+  { to: '/downloads', icon: Download, label: 'Setup & Downloads', roles: ['admin', 'editor'] },
+  { to: '/settings', icon: Settings, label: 'Settings', roles: ['admin', 'editor', 'viewer'] },
 ];
 
 export default function DashboardLayout() {
@@ -28,6 +29,7 @@ export default function DashboardLayout() {
   const navigate = useNavigate();
   const [collapsed, setCollapsed] = useState(false);
   const [mobileOpen, setMobileOpen] = useState(false);
+  const visibleNavItems = navItems.filter(({ roles }) => roles.includes(user?.role));
 
   const handleLogout = () => { logout(); navigate('/login'); };
 
@@ -53,7 +55,7 @@ export default function DashboardLayout() {
       </div>
 
       <nav className="flex-1 px-2 py-3 space-y-0.5 overflow-y-auto">
-        {navItems.map(({ to, icon: Icon, label, end }) => (
+        {visibleNavItems.map(({ to, icon: Icon, label, end }) => (
           <NavLink
             key={to}
             to={to}

@@ -1,10 +1,12 @@
 import { Router } from 'express';
 import db from '../db/index.js';
-import { authenticateToken } from '../middleware/auth.js';
+import { authenticateToken, requireManagementAccess } from '../middleware/auth.js';
 
 const router = Router();
 
-router.get('/', authenticateToken, (req, res) => {
+router.use(authenticateToken, requireManagementAccess);
+
+router.get('/', (req, res) => {
   const { type } = req.query;
   let query = 'SELECT * FROM widgets WHERE 1=1';
   const params = [];
@@ -18,7 +20,7 @@ router.get('/', authenticateToken, (req, res) => {
   res.json({ widgets });
 });
 
-router.get('/:id', authenticateToken, (req, res) => {
+router.get('/:id', (req, res) => {
   const widget = db.prepare('SELECT * FROM widgets WHERE id = ?').get(req.params.id);
   if (!widget) return res.status(404).json({ error: 'Widget not found' });
   widget.config = JSON.parse(widget.config || '{}');
@@ -26,7 +28,7 @@ router.get('/:id', authenticateToken, (req, res) => {
   res.json({ widget });
 });
 
-router.post('/', authenticateToken, (req, res) => {
+router.post('/', (req, res) => {
   const { name, type, config, style } = req.body;
   if (!name || !type) return res.status(400).json({ error: 'Name and type required' });
 
@@ -40,7 +42,7 @@ router.post('/', authenticateToken, (req, res) => {
   res.status(201).json({ widget });
 });
 
-router.put('/:id', authenticateToken, (req, res) => {
+router.put('/:id', (req, res) => {
   const { name, config, style } = req.body;
   const updates = ['updated_at = CURRENT_TIMESTAMP'];
   const params = [];
@@ -58,13 +60,13 @@ router.put('/:id', authenticateToken, (req, res) => {
   res.json({ widget });
 });
 
-router.delete('/:id', authenticateToken, (req, res) => {
+router.delete('/:id', (req, res) => {
   const result = db.prepare('DELETE FROM widgets WHERE id = ?').run(req.params.id);
   if (result.changes === 0) return res.status(404).json({ error: 'Widget not found' });
   res.json({ success: true });
 });
 
-router.get('/:id/preview', authenticateToken, (req, res) => {
+router.get('/:id/preview', (req, res) => {
   const widget = db.prepare('SELECT * FROM widgets WHERE id = ?').get(req.params.id);
   if (!widget) return res.status(404).json({ error: 'Widget not found' });
 

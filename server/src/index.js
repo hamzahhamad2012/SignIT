@@ -10,6 +10,7 @@ import { dirname, join } from 'path';
 import { initDatabase } from './db/index.js';
 import { setupSocketHandlers } from './socket/handler.js';
 import authRoutes from './routes/auth.js';
+import userRoutes from './routes/users.js';
 import deviceRoutes from './routes/devices.js';
 import assetRoutes from './routes/assets.js';
 import playlistRoutes from './routes/playlists.js';
@@ -64,6 +65,7 @@ if (isProduction) {
 }
 
 app.use('/api/auth', authRoutes);
+app.use('/api/users', userRoutes);
 app.use('/api/devices', deviceRoutes);
 app.use('/api/assets', assetRoutes);
 app.use('/api/playlists', playlistRoutes);
