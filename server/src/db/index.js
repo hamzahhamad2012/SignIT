@@ -41,6 +41,10 @@ function applyMigrations() {
     )
   `).run();
 
+  db.prepare('CREATE INDEX IF NOT EXISTS idx_users_status ON users(status)').run();
+  db.prepare('CREATE INDEX IF NOT EXISTS idx_user_device_permissions_user ON user_device_permissions(user_id)').run();
+  db.prepare('CREATE INDEX IF NOT EXISTS idx_user_device_permissions_device ON user_device_permissions(device_id)').run();
+
   db.prepare("UPDATE users SET status = 'active' WHERE status IS NULL OR status = ''").run();
 }
 

@@ -200,7 +200,6 @@ export const schema = `
 
   CREATE INDEX IF NOT EXISTS idx_devices_group ON devices(group_id);
   CREATE INDEX IF NOT EXISTS idx_devices_status ON devices(status);
-  CREATE INDEX IF NOT EXISTS idx_users_status ON users(status);
   CREATE INDEX IF NOT EXISTS idx_playlist_items_playlist ON playlist_items(playlist_id);
   CREATE INDEX IF NOT EXISTS idx_schedules_playlist ON schedules(playlist_id);
   CREATE INDEX IF NOT EXISTS idx_schedules_active ON schedules(is_active);
@@ -208,6 +207,4 @@ export const schema = `
   CREATE INDEX IF NOT EXISTS idx_wall_screens_wall ON wall_screens(wall_id);
   CREATE INDEX IF NOT EXISTS idx_widgets_type ON widgets(type);
   CREATE INDEX IF NOT EXISTS idx_pairing_tokens_code ON pairing_tokens(code);
-  CREATE INDEX IF NOT EXISTS idx_user_device_permissions_user ON user_device_permissions(user_id);
-  CREATE INDEX IF NOT EXISTS idx_user_device_permissions_device ON user_device_permissions(device_id);
 `;
