@@ -17,7 +17,7 @@ const widgetTypes = [
 
 const defaultConfigs = {
   clock: { hour12: true, showDate: true, timezone: '' },
-  weather: { location: 'New York', unit: 'F', icon: 'Sunny', temp: '72', condition: 'Clear' },
+  weather: { location: 'New York', unit: 'F', icon: 'Sunny', temp: '72', condition: 'Clear', latitude: '', longitude: '' },
   ticker: { messages: ['Welcome to our store!', 'Special offers today!'], speed: 20, separator: '|' },
   rss: { title: 'Latest News', url: '', maxItems: 5, items: ['Add headline one', 'Add headline two'] },
   qr: { url: 'https://example.com', label: 'Scan me' },
@@ -257,6 +257,21 @@ export default function Widgets() {
                   <input type="text" value={form.config.condition || ''}
                     onChange={(e) => updateConfig({ condition: e.target.value })} className="w-full" />
                 </div>
+                <div>
+                  <label className="block text-xs font-medium text-zinc-400 mb-1.5">Latitude (optional live)</label>
+                  <input type="number" value={form.config.latitude || ''}
+                    onChange={(e) => updateConfig({ latitude: e.target.value })}
+                    placeholder="40.7128" className="w-full" step="0.0001" />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-zinc-400 mb-1.5">Longitude (optional live)</label>
+                  <input type="number" value={form.config.longitude || ''}
+                    onChange={(e) => updateConfig({ longitude: e.target.value })}
+                    placeholder="-74.0060" className="w-full" step="0.0001" />
+                </div>
+                <p className="col-span-2 text-xs text-zinc-600">
+                  Add latitude/longitude for live weather. Manual temperature and condition are used as the fallback.
+                </p>
               </div>
             )}
 

@@ -199,17 +199,48 @@ function renderWeather(widget, config, style) {
   const unit = escapeHtml(config.unit || 'F');
   const condition = escapeHtml(config.condition || 'Weather');
   const icon = escapeHtml(config.icon || 'Sunny');
+  const latitude = Number(config.latitude);
+  const longitude = Number(config.longitude);
+  const hasLiveWeather = Number.isFinite(latitude) && Number.isFinite(longitude);
+  const temperatureUnit = config.unit === 'C' ? 'celsius' : 'fahrenheit';
 
   return widgetShell({
     title: widget.name,
     style: { ...style, bg: style.bg || 'linear-gradient(135deg,#0f766e,#0f172a)' },
     body: `
       <section style="text-align:center;">
-        <div style="font-size:clamp(72px,14vw,180px);line-height:1;">${icon}</div>
-        <div style="font-size:clamp(56px,12vw,160px);font-weight:900;letter-spacing:-.08em;">${temp}&deg;${unit}</div>
-        <div style="font-size:clamp(22px,4vw,52px);font-weight:700;">${condition}</div>
+        <div id="weatherIcon" style="font-size:clamp(72px,14vw,180px);line-height:1;">${icon}</div>
+        <div style="font-size:clamp(56px,12vw,160px);font-weight:900;letter-spacing:-.08em;"><span id="weatherTemp">${temp}</span>&deg;<span id="weatherUnit">${unit}</span></div>
+        <div id="weatherCondition" style="font-size:clamp(22px,4vw,52px);font-weight:700;">${condition}</div>
         <div style="margin-top:10px;font-size:clamp(18px,3vw,36px);opacity:.72;">${location}</div>
-      </section>`,
+      </section>
+      ${hasLiveWeather ? `<script>
+        var weatherNames = {
+          0: ['Clear', 'Sunny'], 1: ['Mostly clear', 'Sunny'], 2: ['Partly cloudy', 'Cloudy'],
+          3: ['Cloudy', 'Cloudy'], 45: ['Fog', 'Fog'], 48: ['Fog', 'Fog'],
+          51: ['Drizzle', 'Rain'], 53: ['Drizzle', 'Rain'], 55: ['Drizzle', 'Rain'],
+          61: ['Rain', 'Rain'], 63: ['Rain', 'Rain'], 65: ['Heavy rain', 'Rain'],
+          71: ['Snow', 'Snow'], 73: ['Snow', 'Snow'], 75: ['Heavy snow', 'Snow'],
+          80: ['Showers', 'Rain'], 81: ['Showers', 'Rain'], 82: ['Heavy showers', 'Rain'],
+          95: ['Thunderstorm', 'Storm']
+        };
+        async function updateWeather() {
+          try {
+            var url = 'https://api.open-meteo.com/v1/forecast?latitude=${latitude}&longitude=${longitude}&current=temperature_2m,weather_code&temperature_unit=${temperatureUnit}';
+            var response = await fetch(url);
+            if (!response.ok) return;
+            var data = await response.json();
+            var current = data.current || {};
+            var details = weatherNames[current.weather_code] || ['Weather', 'Weather'];
+            document.getElementById('weatherTemp').textContent = Math.round(current.temperature_2m);
+            document.getElementById('weatherUnit').textContent = '${unit}';
+            document.getElementById('weatherCondition').textContent = details[0];
+            document.getElementById('weatherIcon').textContent = details[1];
+          } catch (e) {}
+        }
+        updateWeather();
+        setInterval(updateWeather, 15 * 60 * 1000);
+      </script>` : ''}`,
   });
 }
 
