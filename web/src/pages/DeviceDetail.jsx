@@ -139,6 +139,13 @@ export default function DeviceDetail() {
     toast.success('Group updated');
   };
 
+  const handleOrientationChange = async (orientation) => {
+    await api.put(`/devices/${id}`, { orientation });
+    const updated = await api.get(`/devices/${id}`);
+    setDevice(updated.device);
+    toast.success(`Orientation set to ${orientation}. Online players will rotate shortly.`);
+  };
+
   const handleSaveLocation = async () => {
     await api.put(`/devices/${id}`, locationForm);
     const updated = await api.get(`/devices/${id}`);
@@ -304,6 +311,36 @@ export default function DeviceDetail() {
               </select>
             ) : (
               <p className="text-sm text-zinc-300">{device.group_name || 'No group'}</p>
+            )}
+          </div>
+
+          <div className="card">
+            <h2 className="text-sm font-semibold text-zinc-200 mb-3">Display Orientation</h2>
+            {canManage ? (
+              <div className="space-y-2">
+                <div className="grid grid-cols-2 gap-2">
+                  {[
+                    { value: 'landscape', label: 'Landscape' },
+                    { value: 'portrait', label: 'Portrait' },
+                  ].map(option => (
+                    <button
+                      key={option.value}
+                      onClick={() => handleOrientationChange(option.value)}
+                      className={`btn text-xs ${device.orientation === option.value
+                        ? 'bg-accent/15 text-accent border border-accent/30'
+                        : 'bg-surface-raised hover:bg-surface-hover text-zinc-400 border border-surface-border'
+                      }`}
+                    >
+                      <RotateCw size={13} /> {option.label}
+                    </button>
+                  ))}
+                </div>
+                <p className="text-xs text-zinc-600">
+                  Use portrait for vertical menu boards. The Pi applies this with xrandr and restarts Chromium if needed.
+                </p>
+              </div>
+            ) : (
+              <p className="text-sm text-zinc-300 capitalize">{device.orientation}</p>
             )}
           </div>
 

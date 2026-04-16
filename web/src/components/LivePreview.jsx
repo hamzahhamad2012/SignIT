@@ -41,7 +41,9 @@ export default function LivePreview({ items, transition = 'fade', transitionDura
   const getAssetUrl = (item) => {
     if (item.url) return item.url;
     if (item.filename) {
-      const subdir = item.asset_type === 'video' ? 'videos' : item.asset_type === 'html' ? 'html' : 'images';
+      const subdir = item.asset_type === 'video'
+        ? 'videos'
+        : ['html', 'widget'].includes(item.asset_type) ? 'html' : 'images';
       return `/uploads/${subdir}/${item.filename}`;
     }
     return null;
@@ -88,6 +90,9 @@ export default function LivePreview({ items, transition = 'fade', transitionDura
               )}
               {(item.asset_type === 'url' || item.asset_type === 'stream') && item.url && (
                 <iframe src={item.url} className="w-full h-full border-none" title={item.asset_name} />
+              )}
+              {['html', 'widget'].includes(item.asset_type) && url && (
+                <iframe src={url} className="w-full h-full border-none" title={item.asset_name} />
               )}
               {!url && (
                 <div className="w-full h-full flex items-center justify-center text-zinc-600">

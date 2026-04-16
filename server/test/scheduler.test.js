@@ -228,6 +228,13 @@ test('core API smoke test covers auth, content, devices, schedules, and player r
     }),
   });
   assert.equal(widget.ok, true);
+  assert.ok(widget.data.widget.asset_id);
+
+  const widgetPreview = await request(`/api/widgets/${widget.data.widget.id}/preview`, {
+    headers: { Authorization: authHeaders.Authorization },
+  });
+  assert.equal(widgetPreview.ok, true);
+  assert.match(widgetPreview.data.html, /Lobby Clock/);
 
   const wall = await request('/api/walls', {
     method: 'POST',
@@ -236,6 +243,13 @@ test('core API smoke test covers auth, content, devices, schedules, and player r
   });
   assert.equal(wall.ok, true);
 
+  const assetFolder = await request('/api/assets/folders', {
+    method: 'POST',
+    headers: authHeaders,
+    body: JSON.stringify({ name: 'Lobby Media' }),
+  });
+  assert.equal(assetFolder.ok, true);
+
   const asset = await request('/api/assets', {
     method: 'POST',
     headers: authHeaders,
@@ -243,9 +257,18 @@ test('core API smoke test covers auth, content, devices, schedules, and player r
       name: 'Company Site',
       type: 'url',
       url: 'https://example.com',
+      folder_id: assetFolder.data.folder.id,
     }),
   });
   assert.equal(asset.ok, true);
+  assert.equal(asset.data.asset.folder_id, assetFolder.data.folder.id);
+
+  const folderedAssets = await request(`/api/assets?folder_id=${assetFolder.data.folder.id}`, {
+    headers: { Authorization: authHeaders.Authorization },
+  });
+  assert.equal(folderedAssets.ok, true);
+  assert.equal(folderedAssets.data.assets.length, 1);
+  assert.equal(folderedAssets.data.assets[0].folder_name, 'Lobby Media');
 
   const fallbackPlaylist = await request('/api/playlists', {
     method: 'POST',
@@ -296,9 +319,17 @@ test('core API smoke test covers auth, content, devices, schedules, and player r
     headers: authHeaders,
     body: JSON.stringify({
       assigned_playlist_id: fallbackPlaylist.data.playlist.id,
+      orientation: 'portrait',
     }),
   });
   assert.equal(updateDevice.ok, true);
+  assert.equal(updateDevice.data.device.orientation, 'portrait');
+
+  const playerConfig = await request('/api/player/config', {
+    headers: { 'X-Device-Id': deviceId },
+  });
+  assert.equal(playerConfig.ok, true);
+  assert.equal(playerConfig.data.orientation, 'portrait');
 
   const playerFallback = await request('/api/player/playlist', {
     headers: { 'X-Device-Id': deviceId },

@@ -6,7 +6,7 @@ import LivePreview from '../components/LivePreview';
 import toast from 'react-hot-toast';
 import {
   ArrowLeft, Save, Plus, Trash2, GripVertical, Image, Film,
-  Globe, Code, Clock, Monitor, Rocket, Settings2, Play,
+  Globe, Code, Clock, Monitor, Rocket, Settings2, Play, Folder,
 } from 'lucide-react';
 
 const typeIcons = { image: Image, video: Film, url: Globe, html: Code, widget: Code, stream: Globe };
@@ -17,6 +17,8 @@ export default function PlaylistEditor() {
   const [playlist, setPlaylist] = useState(null);
   const [items, setItems] = useState([]);
   const [assets, setAssets] = useState([]);
+  const [assetFolders, setAssetFolders] = useState([]);
+  const [assetFolderFilter, setAssetFolderFilter] = useState('all');
   const [devices, setDevices] = useState([]);
   const [groups, setGroups] = useState([]);
   const [showAddAsset, setShowAddAsset] = useState(false);
@@ -34,6 +36,7 @@ export default function PlaylistEditor() {
       setItems(d.playlist.items || []);
     }).catch(() => navigate('/playlists'));
     api.get('/assets').then(d => setAssets(d.assets));
+    api.get('/assets/folders').then(d => setAssetFolders(d.folders || []));
     api.get('/devices').then(d => setDevices(d.devices));
     api.get('/groups').then(d => setGroups(d.groups));
   }, [id]);
@@ -132,6 +135,12 @@ export default function PlaylistEditor() {
     if (item.asset_type === 'image' && item.filename) return `/uploads/images/${item.filename}`;
     return null;
   };
+
+  const visibleAssets = assets.filter((asset) => {
+    if (assetFolderFilter === 'all') return true;
+    if (assetFolderFilter === 'unfiled') return !asset.folder_id;
+    return String(asset.folder_id) === String(assetFolderFilter);
+  });
 
   if (!playlist) return <div className="h-64 flex items-center justify-center"><div className="w-8 h-8 border-2 border-accent border-t-transparent rounded-full animate-spin" /></div>;
 
@@ -267,11 +276,19 @@ export default function PlaylistEditor() {
       </div>
 
       <Modal open={showAddAsset} onClose={() => setShowAddAsset(false)} title="Add Content" wide>
-        {assets.length === 0 ? (
+        <div className="flex items-center gap-2 mb-3">
+          <Folder size={14} className="text-zinc-500" />
+          <select value={assetFolderFilter} onChange={(e) => setAssetFolderFilter(e.target.value)} className="text-xs py-1.5">
+            <option value="all">All media</option>
+            <option value="unfiled">Unfiled</option>
+            {assetFolders.map(folder => <option key={folder.id} value={folder.id}>{folder.name}</option>)}
+          </select>
+        </div>
+        {visibleAssets.length === 0 ? (
           <p className="text-sm text-zinc-500 py-8 text-center">No assets available. Upload content first.</p>
         ) : (
           <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 max-h-[50vh] overflow-y-auto">
-            {assets.map(asset => {
+            {visibleAssets.map(asset => {
               const Icon = typeIcons[asset.type] || Image;
               const thumb = asset.thumbnail ? `/uploads/thumbnails/${asset.thumbnail}`
                 : asset.type === 'image' && asset.filename ? `/uploads/images/${asset.filename}` : null;
@@ -287,6 +304,7 @@ export default function PlaylistEditor() {
                   </div>
                   <p className="text-xs font-medium text-zinc-300 truncate">{asset.name}</p>
                   <p className="text-[10px] text-zinc-500 capitalize">{asset.type}</p>
+                  <p className="text-[10px] text-zinc-600 truncate">{asset.folder_name || 'Unfiled'}</p>
                 </button>
               );
             })}

@@ -81,10 +81,21 @@ export const schema = `
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
   );
 
+  CREATE TABLE IF NOT EXISTS asset_folders (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    parent_id INTEGER REFERENCES asset_folders(id) ON DELETE SET NULL,
+    color TEXT DEFAULT '#6366f1',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(parent_id, name)
+  );
+
   CREATE TABLE IF NOT EXISTS assets (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,
     type TEXT NOT NULL CHECK(type IN ('image','video','html','url','widget','stream')),
+    folder_id INTEGER REFERENCES asset_folders(id) ON DELETE SET NULL,
     filename TEXT,
     original_name TEXT,
     mime_type TEXT,
@@ -181,6 +192,7 @@ export const schema = `
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,
     type TEXT NOT NULL CHECK(type IN ('clock','weather','ticker','rss','social','counter','qr','custom_html')),
+    asset_id INTEGER REFERENCES assets(id) ON DELETE SET NULL,
     config TEXT DEFAULT '{}',
     style TEXT DEFAULT '{}',
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -200,6 +212,8 @@ export const schema = `
 
   CREATE INDEX IF NOT EXISTS idx_devices_group ON devices(group_id);
   CREATE INDEX IF NOT EXISTS idx_devices_status ON devices(status);
+  CREATE INDEX IF NOT EXISTS idx_assets_folder ON assets(folder_id);
+  CREATE INDEX IF NOT EXISTS idx_asset_folders_parent ON asset_folders(parent_id);
   CREATE INDEX IF NOT EXISTS idx_playlist_items_playlist ON playlist_items(playlist_id);
   CREATE INDEX IF NOT EXISTS idx_schedules_playlist ON schedules(playlist_id);
   CREATE INDEX IF NOT EXISTS idx_schedules_active ON schedules(is_active);

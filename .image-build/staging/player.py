@@ -25,6 +25,7 @@ import psutil
 from config import load_config, save_config, CACHE_DIR, LOG_DIR
 
 CONTENT_SERVER_PORT = 8889
+PLAYER_VERSION = '1.1.0'
 
 logging.basicConfig(
     level=logging.INFO,
@@ -44,6 +45,7 @@ class SignITPlayer:
         self.running = True
         self.current_playlist = None
         self.chromium_proc = None
+        self.rotation_fallback = False
         self.sio = socketio.Client(reconnection=True, reconnection_delay=5)
         self._setup_socket()
 
@@ -67,6 +69,9 @@ class SignITPlayer:
             elif cmd == 'screenshot':
                 self._take_screenshot()
             elif cmd == 'refresh':
+                self._refresh_content()
+            elif cmd == 'refresh_config':
+                self._refresh_device_config(force_restart=True)
                 self._refresh_content()
 
         @self.sio.on('playlist:deploy')
@@ -125,7 +130,7 @@ class SignITPlayer:
                 'mac_address': mac,
                 'resolution': self.config.get('resolution', '1920x1080'),
                 'os_info': self._get_os_info(),
-                'player_version': '1.0.0',
+                'player_version': PLAYER_VERSION,
             })
 
             # Server returns existing device if MAC matches (reclaim after reflash)
@@ -223,6 +228,77 @@ class SignITPlayer:
             if self.sio.connected:
                 self.sio.emit('player:error', {'error': str(e)})
 
+    def _refresh_device_config(self, force_restart=False):
+        """Pull device settings from the server and apply display-level changes."""
+        try:
+            server_config = self._api_get('/api/player/config', device_header=True)
+            previous_orientation = self.config.get('orientation', 'landscape')
+            orientation = server_config.get('orientation') or 'landscape'
+            if orientation not in ('landscape', 'portrait'):
+                orientation = 'landscape'
+
+            self.config['orientation'] = orientation
+            if server_config.get('resolution'):
+                self.config['resolution'] = server_config.get('resolution')
+            save_config(self.config)
+
+            changed = previous_orientation != orientation
+            self._apply_orientation(orientation)
+
+            if force_restart or changed:
+                log.info(f'Display config changed: orientation={orientation}')
+                self.current_playlist = None
+                if self.chromium_proc and self.chromium_proc.poll() is None:
+                    self.chromium_proc.terminate()
+                    try:
+                        self.chromium_proc.wait(timeout=5)
+                    except Exception:
+                        self.chromium_proc.kill()
+                    self.chromium_proc = None
+
+            return server_config
+        except Exception as e:
+            log.warning(f'Could not refresh device config: {e}')
+            return {}
+
+    def _apply_orientation(self, orientation):
+        """Rotate the X display for physically vertical or horizontal screens."""
+        env = os.environ.copy()
+        env.setdefault('DISPLAY', ':0')
+        rotation = 'right' if orientation == 'portrait' else 'normal'
+
+        try:
+            query = subprocess.run(
+                ['xrandr', '--query'],
+                capture_output=True, text=True, env=env, timeout=5
+            )
+            if query.returncode != 0:
+                raise RuntimeError(query.stderr.strip() or 'xrandr query failed')
+
+            output = None
+            for line in query.stdout.splitlines():
+                if ' connected' in line:
+                    output = line.split()[0]
+                    break
+            if not output:
+                raise RuntimeError('no connected display output found')
+
+            result = subprocess.run(
+                ['xrandr', '--output', output, '--rotate', rotation],
+                capture_output=True, text=True, env=env, timeout=10
+            )
+            if result.returncode != 0:
+                raise RuntimeError(result.stderr.strip() or 'xrandr rotate failed')
+
+            self.rotation_fallback = False
+            log.info(f'Applied display orientation via xrandr: {output} -> {rotation}')
+            time.sleep(1)
+            return True
+        except Exception as e:
+            self.rotation_fallback = orientation == 'portrait'
+            log.warning(f'xrandr orientation failed, using CSS fallback: {e}')
+            return False
+
     def _ensure_chromium_alive(self):
         """Relaunch Chromium if it crashed or was killed."""
         if self.chromium_proc and self.chromium_proc.poll() is not None:
@@ -270,6 +346,9 @@ class SignITPlayer:
         transition_duration = playlist.get('transition_duration', 800)
         bg_color = playlist.get('bg_color', '#000000')
         layout = playlist.get('layout', 'fullscreen')
+        player_css = '#player{position:fixed;inset:0;}'
+        if self.config.get('orientation') == 'portrait' and self.rotation_fallback:
+            player_css = '#player{position:fixed;top:50%;left:50%;width:100vh;height:100vw;transform:translate(-50%,-50%) rotate(90deg);transform-origin:center center;}'
 
         single_item = len(items) == 1
         slides_html = ''
@@ -290,6 +369,9 @@ class SignITPlayer:
             elif asset_type in ('url', 'stream'):
                 url = item.get('url', '')
                 slides_html += f'''<div class="slide" data-duration="{item.get('duration', 30)}" style="display:{visible}"><iframe src="{url}" style="width:100%;height:100%;border:none;"></iframe></div>'''
+            elif asset_type in ('html', 'widget'):
+                filename = item.get('filename', '')
+                slides_html += f'''<div class="slide" data-duration="{item.get('duration', 30)}" style="display:{visible}"><iframe src="{filename}" style="width:100%;height:100%;border:none;"></iframe></div>'''
 
         html = f'''<!DOCTYPE html>
 <html><head>
@@ -297,6 +379,7 @@ class SignITPlayer:
 <style>
 *{{margin:0;padding:0;box-sizing:border-box}}
 html,body{{width:100%;height:100%;overflow:hidden;background:{bg_color}}}
+{player_css}
 .slide{{position:absolute;top:0;left:0;width:100%;height:100%}}
 .slide img,.slide video,.slide iframe{{display:block;width:100%;height:100%}}
 </style>
@@ -570,7 +653,7 @@ html,body{{width:100%;height:100%;overflow:hidden;background:{bg_color}}}
         except Exception:
             pass
 
-        metrics['player_version'] = '1.0.0'
+        metrics['player_version'] = PLAYER_VERSION
         return metrics
 
     def _get_os_info(self):
@@ -693,7 +776,7 @@ html,body{{width:100%;height:100%;overflow:hidden;background:{bg_color}}}
     def run(self):
         """Main run loop."""
         log.info('=' * 50)
-        log.info('  SignIT Player v1.0.0')
+        log.info(f'  SignIT Player v{PLAYER_VERSION}')
         log.info('=' * 50)
         log.info(f'Server: {self.server_url}')
 
@@ -709,6 +792,7 @@ html,body{{width:100%;height:100%;overflow:hidden;background:{bg_color}}}
             time.sleep(30)
             return self.run()
 
+        self._refresh_device_config(force_restart=True)
         log.info(f'Device ID: {self.device_id}')
 
         ws_thread = threading.Thread(target=self._ws_connect_loop, daemon=True)

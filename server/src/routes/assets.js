@@ -47,6 +47,31 @@ const router = Router();
 
 router.use(authenticateToken, requireManagementAccess);
 
+function normalizeFolderId(folderId) {
+  if (folderId === undefined || folderId === null || folderId === '' || folderId === 'null') return null;
+  const id = Number(folderId);
+  if (!Number.isInteger(id) || id < 1) {
+    const error = new Error('Invalid folder');
+    error.status = 400;
+    throw error;
+  }
+
+  const folder = db.prepare('SELECT id FROM asset_folders WHERE id = ?').get(id);
+  if (!folder) {
+    const error = new Error('Folder not found');
+    error.status = 404;
+    throw error;
+  }
+
+  return id;
+}
+
+function normalizeAsset(asset) {
+  if (!asset) return asset;
+  asset.metadata = JSON.parse(asset.metadata || '{}');
+  return asset;
+}
+
 async function generateThumbnail(filepath, filename) {
   try {
     const thumbName = `thumb_${filename.replace(extname(filename), '.jpg')}`;
@@ -62,17 +87,135 @@ async function generateThumbnail(filepath, filename) {
 }
 
 router.get('/', (req, res) => {
-  const { type, search } = req.query;
-  let query = 'SELECT * FROM assets WHERE 1=1';
+  const { type, search, folder_id } = req.query;
+  let query = `
+    SELECT a.*, f.name as folder_name, f.color as folder_color
+    FROM assets a
+    LEFT JOIN asset_folders f ON f.id = a.folder_id
+    WHERE 1=1
+  `;
   const params = [];
 
-  if (type) { query += ' AND type = ?'; params.push(type); }
-  if (search) { query += ' AND name LIKE ?'; params.push(`%${search}%`); }
+  if (type) { query += ' AND a.type = ?'; params.push(type); }
+  if (folder_id === 'unfiled') {
+    query += ' AND a.folder_id IS NULL';
+  } else if (folder_id) {
+    query += ' AND a.folder_id = ?';
+    params.push(Number(folder_id));
+  }
+  if (search) { query += ' AND a.name LIKE ?'; params.push(`%${search}%`); }
 
-  query += ' ORDER BY created_at DESC';
+  query += ' ORDER BY a.created_at DESC';
   const assets = db.prepare(query).all(...params);
-  assets.forEach(a => { a.metadata = JSON.parse(a.metadata || '{}'); });
+  assets.forEach(normalizeAsset);
   res.json({ assets });
+});
+
+router.get('/folders', (req, res) => {
+  const folders = db.prepare(`
+    SELECT f.*,
+           COUNT(a.id) as asset_count,
+           COALESCE(SUM(a.size), 0) as total_size
+    FROM asset_folders f
+    LEFT JOIN assets a ON a.folder_id = f.id
+    GROUP BY f.id
+    ORDER BY f.name COLLATE NOCASE ASC
+  `).all();
+
+  const unfiled = db.prepare(`
+    SELECT COUNT(*) as asset_count, COALESCE(SUM(size), 0) as total_size
+    FROM assets
+    WHERE folder_id IS NULL
+  `).get();
+
+  res.json({ folders, unfiled });
+});
+
+router.post('/folders', (req, res) => {
+  const name = String(req.body.name || '').trim();
+  const color = String(req.body.color || '#6366f1').trim() || '#6366f1';
+  const parentId = req.body.parent_id ? normalizeFolderId(req.body.parent_id) : null;
+
+  if (!name) return res.status(400).json({ error: 'Folder name required' });
+  const duplicate = db.prepare(`
+    SELECT id FROM asset_folders
+    WHERE name = ? AND COALESCE(parent_id, 0) = COALESCE(?, 0)
+  `).get(name, parentId);
+  if (duplicate) return res.status(409).json({ error: 'A folder with that name already exists' });
+
+  try {
+    const result = db.prepare(`
+      INSERT INTO asset_folders (name, parent_id, color)
+      VALUES (?, ?, ?)
+    `).run(name, parentId, color);
+    const folder = db.prepare('SELECT * FROM asset_folders WHERE id = ?').get(result.lastInsertRowid);
+    res.status(201).json({ folder: { ...folder, asset_count: 0, total_size: 0 } });
+  } catch (err) {
+    if (err.code === 'SQLITE_CONSTRAINT_UNIQUE') {
+      return res.status(409).json({ error: 'A folder with that name already exists' });
+    }
+    throw err;
+  }
+});
+
+router.put('/folders/:id', (req, res) => {
+  const folder = db.prepare('SELECT * FROM asset_folders WHERE id = ?').get(req.params.id);
+  if (!folder) return res.status(404).json({ error: 'Folder not found' });
+
+  const updates = ['updated_at = CURRENT_TIMESTAMP'];
+  const params = [];
+
+  if (req.body.name !== undefined) {
+    const name = String(req.body.name || '').trim();
+    if (!name) return res.status(400).json({ error: 'Folder name required' });
+    const duplicate = db.prepare(`
+      SELECT id FROM asset_folders
+      WHERE id != ? AND name = ? AND COALESCE(parent_id, 0) = COALESCE(?, 0)
+    `).get(req.params.id, name, folder.parent_id);
+    if (duplicate) return res.status(409).json({ error: 'A folder with that name already exists' });
+    updates.push('name = ?');
+    params.push(name);
+  }
+
+  if (req.body.color !== undefined) {
+    updates.push('color = ?');
+    params.push(String(req.body.color || '#6366f1'));
+  }
+
+  if (req.body.parent_id !== undefined) {
+    const parentId = normalizeFolderId(req.body.parent_id);
+    if (parentId === Number(req.params.id)) {
+      return res.status(400).json({ error: 'Folder cannot be its own parent' });
+    }
+    updates.push('parent_id = ?');
+    params.push(parentId);
+  }
+
+  try {
+    params.push(req.params.id);
+    db.prepare(`UPDATE asset_folders SET ${updates.join(', ')} WHERE id = ?`).run(...params);
+    const updated = db.prepare('SELECT * FROM asset_folders WHERE id = ?').get(req.params.id);
+    res.json({ folder: updated });
+  } catch (err) {
+    if (err.code === 'SQLITE_CONSTRAINT_UNIQUE') {
+      return res.status(409).json({ error: 'A folder with that name already exists' });
+    }
+    throw err;
+  }
+});
+
+router.delete('/folders/:id', (req, res) => {
+  const folder = db.prepare('SELECT * FROM asset_folders WHERE id = ?').get(req.params.id);
+  if (!folder) return res.status(404).json({ error: 'Folder not found' });
+
+  const tx = db.transaction(() => {
+    db.prepare('UPDATE assets SET folder_id = NULL, updated_at = CURRENT_TIMESTAMP WHERE folder_id = ?').run(req.params.id);
+    db.prepare('UPDATE asset_folders SET parent_id = NULL WHERE parent_id = ?').run(req.params.id);
+    db.prepare('DELETE FROM asset_folders WHERE id = ?').run(req.params.id);
+  });
+  tx();
+
+  res.json({ success: true });
 });
 
 router.get('/stats', (req, res) => {
@@ -83,21 +226,26 @@ router.get('/stats', (req, res) => {
 });
 
 router.get('/:id', (req, res) => {
-  const asset = db.prepare('SELECT * FROM assets WHERE id = ?').get(req.params.id);
+  const asset = db.prepare(`
+    SELECT a.*, f.name as folder_name, f.color as folder_color
+    FROM assets a
+    LEFT JOIN asset_folders f ON f.id = a.folder_id
+    WHERE a.id = ?
+  `).get(req.params.id);
   if (!asset) return res.status(404).json({ error: 'Asset not found' });
-  asset.metadata = JSON.parse(asset.metadata || '{}');
-  res.json({ asset });
+  res.json({ asset: normalizeAsset(asset) });
 });
 
 router.post('/', upload.single('file'), async (req, res) => {
   try {
     const { name, type: assetType, url } = req.body;
+    const folderId = normalizeFolderId(req.body.folder_id);
 
     if (assetType === 'url' || assetType === 'stream') {
       const result = db.prepare(`
-        INSERT INTO assets (name, type, url) VALUES (?, ?, ?)
-      `).run(name || url, assetType, url);
-      const asset = db.prepare('SELECT * FROM assets WHERE id = ?').get(result.lastInsertRowid);
+        INSERT INTO assets (name, type, folder_id, url) VALUES (?, ?, ?, ?)
+      `).run(name || url, assetType, folderId, url);
+      const asset = normalizeAsset(db.prepare('SELECT * FROM assets WHERE id = ?').get(result.lastInsertRowid));
       return res.status(201).json({ asset });
     }
 
@@ -129,12 +277,10 @@ router.post('/', upload.single('file'), async (req, res) => {
         const pgSize = existsSync(pgPath) ? statSync(pgPath).size : 0;
         const pgName = pages.length > 1 ? `${displayName} — Page ${pg.page}` : displayName;
         const r = db.prepare(`
-          INSERT INTO assets (name, type, filename, original_name, mime_type, size, width, height, thumbnail)
-          VALUES (?, 'image', ?, ?, 'image/jpeg', ?, ?, ?, ?)
-        `).run(pgName, pg.filename, req.file.originalname, pgSize, w, h, thumb);
-        const a = db.prepare('SELECT * FROM assets WHERE id = ?').get(r.lastInsertRowid);
-        a.metadata = JSON.parse(a.metadata || '{}');
-        createdAssets.push(a);
+          INSERT INTO assets (name, type, folder_id, filename, original_name, mime_type, size, width, height, thumbnail)
+          VALUES (?, 'image', ?, ?, ?, 'image/jpeg', ?, ?, ?, ?)
+        `).run(pgName, folderId, pg.filename, req.file.originalname, pgSize, w, h, thumb);
+        createdAssets.push(normalizeAsset(db.prepare('SELECT * FROM assets WHERE id = ?').get(r.lastInsertRowid)));
       }
 
       return res.status(201).json({ asset: createdAssets[0], assets: createdAssets, pages: createdAssets.length });
@@ -149,12 +295,11 @@ router.post('/', upload.single('file'), async (req, res) => {
       const { duration, thumbnail } = await getVideoMeta(finalPath, THUMB_DIR, finalName);
 
       const result = db.prepare(`
-        INSERT INTO assets (name, type, filename, original_name, mime_type, size, duration, thumbnail)
-        VALUES (?, 'video', ?, ?, 'video/mp4', ?, ?, ?)
-      `).run(displayName, finalName, req.file.originalname, finalSize, duration, thumbnail);
+        INSERT INTO assets (name, type, folder_id, filename, original_name, mime_type, size, duration, thumbnail)
+        VALUES (?, 'video', ?, ?, ?, 'video/mp4', ?, ?, ?)
+      `).run(displayName, folderId, finalName, req.file.originalname, finalSize, duration, thumbnail);
 
-      const asset = db.prepare('SELECT * FROM assets WHERE id = ?').get(result.lastInsertRowid);
-      asset.metadata = JSON.parse(asset.metadata || '{}');
+      const asset = normalizeAsset(db.prepare('SELECT * FROM assets WHERE id = ?').get(result.lastInsertRowid));
       return res.status(201).json({ asset });
     }
 
@@ -175,32 +320,30 @@ router.post('/', upload.single('file'), async (req, res) => {
       const finalMime = finalName.endsWith('.jpg') ? 'image/jpeg' : mime;
 
       const result = db.prepare(`
-        INSERT INTO assets (name, type, filename, original_name, mime_type, size, width, height, thumbnail)
-        VALUES (?, 'image', ?, ?, ?, ?, ?, ?, ?)
-      `).run(displayName, finalName, req.file.originalname, finalMime, finalSize, width, height, thumbnail);
+        INSERT INTO assets (name, type, folder_id, filename, original_name, mime_type, size, width, height, thumbnail)
+        VALUES (?, 'image', ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(displayName, folderId, finalName, req.file.originalname, finalMime, finalSize, width, height, thumbnail);
 
-      const asset = db.prepare('SELECT * FROM assets WHERE id = ?').get(result.lastInsertRowid);
-      asset.metadata = JSON.parse(asset.metadata || '{}');
+      const asset = normalizeAsset(db.prepare('SELECT * FROM assets WHERE id = ?').get(result.lastInsertRowid));
       return res.status(201).json({ asset });
     }
 
     // ── HTML / other ────────────────────────────────────────────────────
     const result = db.prepare(`
-      INSERT INTO assets (name, type, filename, original_name, mime_type, size)
-      VALUES (?, 'html', ?, ?, ?, ?)
-    `).run(displayName, req.file.filename, req.file.originalname, mime, req.file.size);
+      INSERT INTO assets (name, type, folder_id, filename, original_name, mime_type, size)
+      VALUES (?, 'html', ?, ?, ?, ?, ?)
+    `).run(displayName, folderId, req.file.filename, req.file.originalname, mime, req.file.size);
 
-    const asset = db.prepare('SELECT * FROM assets WHERE id = ?').get(result.lastInsertRowid);
-    asset.metadata = JSON.parse(asset.metadata || '{}');
+    const asset = normalizeAsset(db.prepare('SELECT * FROM assets WHERE id = ?').get(result.lastInsertRowid));
     res.status(201).json({ asset });
   } catch (err) {
     console.error('[Assets] Upload error:', err);
-    res.status(500).json({ error: 'Upload failed' });
+    res.status(err.status || 500).json({ error: err.status ? err.message : 'Upload failed' });
   }
 });
 
 router.put('/:id', (req, res) => {
-  const { name, duration, metadata } = req.body;
+  const { name, duration, metadata, folder_id } = req.body;
   const asset = db.prepare('SELECT * FROM assets WHERE id = ?').get(req.params.id);
   if (!asset) return res.status(404).json({ error: 'Asset not found' });
 
@@ -209,14 +352,26 @@ router.put('/:id', (req, res) => {
 
   if (name !== undefined) { updates.push('name = ?'); params.push(name); }
   if (duration !== undefined) { updates.push('duration = ?'); params.push(duration); }
+  if (folder_id !== undefined) {
+    try {
+      updates.push('folder_id = ?');
+      params.push(normalizeFolderId(folder_id));
+    } catch (err) {
+      return res.status(err.status || 400).json({ error: err.message });
+    }
+  }
   if (metadata !== undefined) { updates.push('metadata = ?'); params.push(JSON.stringify(metadata)); }
 
   params.push(req.params.id);
   db.prepare(`UPDATE assets SET ${updates.join(', ')} WHERE id = ?`).run(...params);
 
-  const updated = db.prepare('SELECT * FROM assets WHERE id = ?').get(req.params.id);
-  updated.metadata = JSON.parse(updated.metadata || '{}');
-  res.json({ asset: updated });
+  const updated = db.prepare(`
+    SELECT a.*, f.name as folder_name, f.color as folder_color
+    FROM assets a
+    LEFT JOIN asset_folders f ON f.id = a.folder_id
+    WHERE a.id = ?
+  `).get(req.params.id);
+  res.json({ asset: normalizeAsset(updated) });
 });
 
 router.delete('/:id', (req, res) => {
@@ -232,6 +387,13 @@ router.delete('/:id', (req, res) => {
   if (asset.thumbnail) {
     const thumbPath = join(THUMB_DIR, asset.thumbnail);
     if (existsSync(thumbPath)) unlinkSync(thumbPath);
+  }
+
+  if (asset.type === 'widget') {
+    const metadata = JSON.parse(asset.metadata || '{}');
+    if (metadata.widget_id) {
+      db.prepare('DELETE FROM widgets WHERE id = ?').run(metadata.widget_id);
+    }
   }
 
   db.prepare('DELETE FROM playlist_items WHERE asset_id = ?').run(req.params.id);

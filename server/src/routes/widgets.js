@@ -1,34 +1,104 @@
 import { Router } from 'express';
+import { existsSync, mkdirSync, statSync, unlinkSync, writeFileSync } from 'fs';
+import { join } from 'path';
+import { nanoid } from 'nanoid';
 import db from '../db/index.js';
 import { authenticateToken, requireManagementAccess } from '../middleware/auth.js';
+import { UPLOAD_DIR } from '../config/paths.js';
+import { renderWidgetDocument } from '../services/widgetRenderer.js';
 
 const router = Router();
+const HTML_DIR = join(UPLOAD_DIR, 'html');
+mkdirSync(HTML_DIR, { recursive: true });
 
 router.use(authenticateToken, requireManagementAccess);
 
-router.get('/', (req, res) => {
-  const { type } = req.query;
-  let query = 'SELECT * FROM widgets WHERE 1=1';
-  const params = [];
-  if (type) { query += ' AND type = ?'; params.push(type); }
-  query += ' ORDER BY created_at DESC';
-  const widgets = db.prepare(query).all(...params);
-  widgets.forEach(w => {
-    w.config = JSON.parse(w.config || '{}');
-    w.style = JSON.parse(w.style || '{}');
-  });
-  res.json({ widgets });
-});
+const asyncHandler = (fn) => (req, res, next) => {
+  Promise.resolve(fn(req, res, next)).catch(next);
+};
 
-router.get('/:id', (req, res) => {
-  const widget = db.prepare('SELECT * FROM widgets WHERE id = ?').get(req.params.id);
-  if (!widget) return res.status(404).json({ error: 'Widget not found' });
+function normalizeWidget(widget) {
+  if (!widget) return widget;
   widget.config = JSON.parse(widget.config || '{}');
   widget.style = JSON.parse(widget.style || '{}');
-  res.json({ widget });
+  return widget;
+}
+
+async function syncWidgetAsset(widgetId) {
+  const widget = db.prepare('SELECT * FROM widgets WHERE id = ?').get(widgetId);
+  if (!widget) return null;
+
+  let asset = widget.asset_id
+    ? db.prepare('SELECT * FROM assets WHERE id = ?').get(widget.asset_id)
+    : null;
+  const filename = asset?.filename || `widget_${nanoid(16)}.html`;
+  const filepath = join(HTML_DIR, filename);
+  const html = await renderWidgetDocument(widget);
+  writeFileSync(filepath, html, 'utf8');
+  const size = existsSync(filepath) ? statSync(filepath).size : Buffer.byteLength(html);
+  const assetName = `${widget.name} (Widget)`;
+  const metadata = JSON.stringify({
+    widget_id: widget.id,
+    widget_type: widget.type,
+    generated_at: new Date().toISOString(),
+  });
+
+  if (asset) {
+    db.prepare(`
+      UPDATE assets SET name = ?, type = 'widget', filename = ?, original_name = ?,
+        mime_type = 'text/html', size = ?, metadata = ?, updated_at = CURRENT_TIMESTAMP
+      WHERE id = ?
+    `).run(assetName, filename, `${widget.name}.html`, size, metadata, asset.id);
+  } else {
+    const result = db.prepare(`
+      INSERT INTO assets (name, type, filename, original_name, mime_type, size, metadata)
+      VALUES (?, 'widget', ?, ?, 'text/html', ?, ?)
+    `).run(assetName, filename, `${widget.name}.html`, size, metadata);
+    db.prepare('UPDATE widgets SET asset_id = ? WHERE id = ?').run(result.lastInsertRowid, widget.id);
+  }
+
+  const synced = db.prepare(`
+    SELECT w.*, a.id as asset_id, a.filename as asset_filename, a.name as asset_name
+    FROM widgets w
+    LEFT JOIN assets a ON a.id = w.asset_id
+    WHERE w.id = ?
+  `).get(widget.id);
+  return normalizeWidget(synced);
+}
+
+router.get('/', asyncHandler(async (req, res) => {
+  const { type } = req.query;
+  let query = `
+    SELECT w.*, a.filename as asset_filename, a.name as asset_name
+    FROM widgets w
+    LEFT JOIN assets a ON a.id = w.asset_id
+    WHERE 1=1
+  `;
+  const params = [];
+  if (type) { query += ' AND w.type = ?'; params.push(type); }
+  query += ' ORDER BY w.created_at DESC';
+  const widgets = db.prepare(query).all(...params);
+
+  const synced = [];
+  for (const widget of widgets) {
+    synced.push(widget.asset_id && widget.asset_filename ? normalizeWidget(widget) : await syncWidgetAsset(widget.id));
+  }
+
+  res.json({ widgets: synced.filter(Boolean) });
+}));
+
+router.get('/:id', (req, res) => {
+  const widget = db.prepare(`
+    SELECT w.*, a.filename as asset_filename, a.name as asset_name
+    FROM widgets w
+    LEFT JOIN assets a ON a.id = w.asset_id
+    WHERE w.id = ?
+  `).get(req.params.id);
+  if (!widget) return res.status(404).json({ error: 'Widget not found' });
+  res.json({ widget: normalizeWidget(widget) });
 });
 
-router.post('/', (req, res) => {
+router.post('/', asyncHandler(async (req, res) => {
   const { name, type, config, style } = req.body;
   if (!name || !type) return res.status(400).json({ error: 'Name and type required' });
 
@@ -36,14 +106,15 @@ router.post('/', (req, res) => {
     INSERT INTO widgets (name, type, config, style) VALUES (?, ?, ?, ?)
   `).run(name, type, JSON.stringify(config || {}), JSON.stringify(style || {}));
 
-  const widget = db.prepare('SELECT * FROM widgets WHERE id = ?').get(result.lastInsertRowid);
-  widget.config = JSON.parse(widget.config || '{}');
-  widget.style = JSON.parse(widget.style || '{}');
+  const widget = await syncWidgetAsset(result.lastInsertRowid);
   res.status(201).json({ widget });
-});
+}));
 
-router.put('/:id', (req, res) => {
+router.put('/:id', asyncHandler(async (req, res) => {
   const { name, config, style } = req.body;
+  const existing = db.prepare('SELECT * FROM widgets WHERE id = ?').get(req.params.id);
+  if (!existing) return res.status(404).json({ error: 'Widget not found' });
+
   const updates = ['updated_at = CURRENT_TIMESTAMP'];
   const params = [];
 
@@ -54,56 +125,45 @@ router.put('/:id', (req, res) => {
   params.push(req.params.id);
   db.prepare(`UPDATE widgets SET ${updates.join(', ')} WHERE id = ?`).run(...params);
 
-  const widget = db.prepare('SELECT * FROM widgets WHERE id = ?').get(req.params.id);
-  widget.config = JSON.parse(widget.config || '{}');
-  widget.style = JSON.parse(widget.style || '{}');
+  const widget = await syncWidgetAsset(req.params.id);
   res.json({ widget });
-});
+}));
 
 router.delete('/:id', (req, res) => {
-  const result = db.prepare('DELETE FROM widgets WHERE id = ?').run(req.params.id);
-  if (result.changes === 0) return res.status(404).json({ error: 'Widget not found' });
-  res.json({ success: true });
-});
-
-router.get('/:id/preview', (req, res) => {
   const widget = db.prepare('SELECT * FROM widgets WHERE id = ?').get(req.params.id);
   if (!widget) return res.status(404).json({ error: 'Widget not found' });
 
-  const config = JSON.parse(widget.config || '{}');
-  const style = JSON.parse(widget.style || '{}');
-  let html = '';
-
-  switch (widget.type) {
-    case 'clock':
-      html = `<div style="font-family:${style.fontFamily||'system-ui'};font-size:${style.fontSize||'48px'};color:${style.color||'#fff'};text-align:center;padding:20px;">
-        <div id="time"></div><div style="font-size:0.4em;opacity:0.6" id="date"></div>
-        <script>function u(){const n=new Date();document.getElementById('time').textContent=n.toLocaleTimeString('en-US',{hour12:${config.hour12!==false}});document.getElementById('date').textContent=n.toLocaleDateString('en-US',{weekday:'long',month:'long',day:'numeric'});}u();setInterval(u,1000);</script></div>`;
-      break;
-    case 'weather':
-      html = `<div style="font-family:system-ui;color:#fff;padding:20px;text-align:center;">
-        <div style="font-size:48px;">${config.icon||'☀️'}</div>
-        <div style="font-size:36px;font-weight:bold;">${config.temp||'72'}°${config.unit||'F'}</div>
-        <div style="opacity:0.6;">${config.location||'New York'}</div></div>`;
-      break;
-    case 'ticker':
-      html = `<div style="overflow:hidden;white-space:nowrap;background:${style.bg||'#000'};color:${style.color||'#fff'};font-size:${style.fontSize||'24px'};padding:10px 0;">
-        <div style="display:inline-block;animation:scroll ${config.speed||20}s linear infinite;">
-          ${(config.messages||['Breaking news...']).map(m=>`<span style="padding:0 40px;">${m}</span>`).join('')}
-        </div>
-        <style>@keyframes scroll{0%{transform:translateX(100%);}100%{transform:translateX(-100%);}}</style></div>`;
-      break;
-    case 'qr':
-      html = `<div style="text-align:center;padding:20px;background:#fff;display:inline-block;border-radius:12px;">
-        <img src="https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(config.url||'https://signit.local')}" />
-        ${config.label ? `<div style="margin-top:8px;font-size:14px;color:#333;">${config.label}</div>` : ''}
-        </div>`;
-      break;
-    default:
-      html = `<div style="color:#fff;padding:20px;">Widget preview</div>`;
+  const asset = widget.asset_id ? db.prepare('SELECT * FROM assets WHERE id = ?').get(widget.asset_id) : null;
+  if (asset?.filename) {
+    const filepath = join(HTML_DIR, asset.filename);
+    if (existsSync(filepath)) unlinkSync(filepath);
   }
 
-  res.json({ html });
+  const tx = db.transaction(() => {
+    if (widget.asset_id) {
+      db.prepare('DELETE FROM playlist_items WHERE asset_id = ?').run(widget.asset_id);
+      db.prepare('DELETE FROM assets WHERE id = ?').run(widget.asset_id);
+    }
+    db.prepare('DELETE FROM widgets WHERE id = ?').run(req.params.id);
+  });
+  tx();
+
+  res.json({ success: true });
 });
+
+router.post('/:id/publish', asyncHandler(async (req, res) => {
+  const widget = await syncWidgetAsset(req.params.id);
+  if (!widget) return res.status(404).json({ error: 'Widget not found' });
+  res.json({ widget });
+}));
+
+router.get('/:id/preview', asyncHandler(async (req, res) => {
+  const widget = db.prepare('SELECT * FROM widgets WHERE id = ?').get(req.params.id);
+  if (!widget) return res.status(404).json({ error: 'Widget not found' });
+
+  const html = await renderWidgetDocument(widget);
+
+  res.json({ html });
+}));
 
 export default router;

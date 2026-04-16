@@ -30,7 +30,7 @@ cd tools
 ./build-image.sh
 ```
 
-Takes ~15 minutes. Outputs `dist/signit.img.gz`.
+Takes ~15 minutes. Outputs a versioned image such as `dist/signit-v11.img.gz`.
 
 > Only need to do this once. After that, flash the same image to as many SD cards as you want.
 
@@ -39,7 +39,7 @@ Takes ~15 minutes. Outputs `dist/signit.img.gz`.
 **Important:** Raspberry Pi Imager **does not offer OS Customisation** (WiFi / user / SSH wizard) when you use **Use custom** with a third-party image. The **Customisation** step stays greyed out — that is normal Imager behavior, not a bug in SignIT.
 
 1. Open **[Raspberry Pi Imager](https://www.raspberrypi.com/software/)**
-2. Choose OS → **Use custom** → select `dist/signit.img.gz`
+2. Choose OS → **Use custom** → select the latest image in `dist/` such as `dist/signit-v11.img.gz`
 3. Select your SD card → **Write**
 
 **Get WiFi working before first boot** (pick one):

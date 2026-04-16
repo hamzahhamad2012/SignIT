@@ -135,7 +135,13 @@ router.put('/:id', authenticateToken, requireManagementAccess, (req, res) => {
 
   if (name !== undefined) { updates.push('name = ?'); params.push(name); }
   if (group_id !== undefined) { updates.push('group_id = ?'); params.push(group_id); }
-  if (orientation !== undefined) { updates.push('orientation = ?'); params.push(orientation); }
+  if (orientation !== undefined) {
+    if (!['landscape', 'portrait'].includes(orientation)) {
+      return res.status(400).json({ error: 'Invalid orientation' });
+    }
+    updates.push('orientation = ?');
+    params.push(orientation);
+  }
   if (assigned_playlist_id !== undefined) { updates.push('assigned_playlist_id = ?'); params.push(assigned_playlist_id); }
   if (settings !== undefined) { updates.push('settings = ?'); params.push(JSON.stringify(settings)); }
   if (tags !== undefined) { updates.push('tags = ?'); params.push(JSON.stringify(tags)); }
@@ -165,6 +171,14 @@ router.put('/:id', authenticateToken, requireManagementAccess, (req, res) => {
     } else {
       io.to(`device:${req.params.id}`).emit('command', { command: 'refresh' });
     }
+  }
+
+  if (orientation !== undefined) {
+    const io = req.app.get('io');
+    io.to(`device:${req.params.id}`).emit('command', {
+      command: 'refresh_config',
+      params: { orientation },
+    });
   }
 
   if (group_id !== undefined && assigned_playlist_id === undefined) {

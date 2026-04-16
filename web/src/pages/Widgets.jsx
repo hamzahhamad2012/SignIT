@@ -17,9 +17,9 @@ const widgetTypes = [
 
 const defaultConfigs = {
   clock: { hour12: true, showDate: true, timezone: '' },
-  weather: { location: 'New York', unit: 'F', icon: '☀️', temp: '72' },
-  ticker: { messages: ['Welcome to our store!', 'Special offers today!'], speed: 20 },
-  rss: { url: '', maxItems: 5 },
+  weather: { location: 'New York', unit: 'F', icon: 'Sunny', temp: '72', condition: 'Clear' },
+  ticker: { messages: ['Welcome to our store!', 'Special offers today!'], speed: 20, separator: '|' },
+  rss: { title: 'Latest News', url: '', maxItems: 5, items: ['Add headline one', 'Add headline two'] },
   qr: { url: 'https://example.com', label: 'Scan me' },
   counter: { label: 'Visitors', value: 1234, prefix: '', suffix: '' },
   custom_html: { html: '<div style="color:white;padding:20px;">Custom content</div>' },
@@ -32,6 +32,7 @@ export default function Widgets() {
   const [showPreview, setShowPreview] = useState(null);
   const [previewHtml, setPreviewHtml] = useState('');
   const [selectedType, setSelectedType] = useState(null);
+  const [editingWidget, setEditingWidget] = useState(null);
   const [form, setForm] = useState({ name: '', type: '', config: {}, style: {} });
 
   const fetchWidgets = () => {
@@ -40,14 +41,43 @@ export default function Widgets() {
 
   useEffect(() => { fetchWidgets(); }, []);
 
-  const handleCreate = async () => {
+  const resetEditor = () => {
+    setShowCreate(false);
+    setSelectedType(null);
+    setEditingWidget(null);
+    setForm({ name: '', type: '', config: {}, style: {} });
+  };
+
+  const openCreate = () => {
+    setEditingWidget(null);
+    setSelectedType(null);
+    setForm({ name: '', type: '', config: {}, style: {} });
+    setShowCreate(true);
+  };
+
+  const openEdit = (widget) => {
+    setEditingWidget(widget);
+    setSelectedType(widget.type);
+    setForm({
+      name: widget.name,
+      type: widget.type,
+      config: widget.config || {},
+      style: widget.style || {},
+    });
+    setShowCreate(true);
+  };
+
+  const handleSaveWidget = async () => {
     if (!form.name || !form.type) return toast.error('Name and type required');
     try {
-      await api.post('/widgets', form);
-      toast.success('Widget created');
-      setShowCreate(false);
-      setSelectedType(null);
-      setForm({ name: '', type: '', config: {}, style: {} });
+      if (editingWidget) {
+        await api.put(`/widgets/${editingWidget.id}`, form);
+        toast.success('Widget updated and playlist asset regenerated');
+      } else {
+        await api.post('/widgets', form);
+        toast.success('Widget created as playlist-ready asset');
+      }
+      resetEditor();
       fetchWidgets();
     } catch (err) { toast.error(err.message); }
   };
@@ -67,6 +97,9 @@ export default function Widgets() {
     toast.success('Widget deleted');
   };
 
+  const updateConfig = (updates) => setForm(f => ({ ...f, config: { ...f.config, ...updates } }));
+  const updateStyle = (updates) => setForm(f => ({ ...f, style: { ...f.style, ...updates } }));
+
   return (
     <div className="space-y-5">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
@@ -74,7 +107,7 @@ export default function Widgets() {
           <h1 className="text-2xl font-bold text-zinc-100">Widgets</h1>
           <p className="text-sm text-zinc-500 mt-0.5">Overlay widgets for clocks, tickers, weather, QR codes, and more</p>
         </div>
-        <button onClick={() => setShowCreate(true)} className="btn-primary">
+        <button onClick={openCreate} className="btn-primary">
           <Plus size={15} /> New Widget
         </button>
       </div>
@@ -86,7 +119,7 @@ export default function Widgets() {
       ) : widgets.length === 0 ? (
         <EmptyState icon={Puzzle} title="No widgets yet"
           description="Create overlay widgets like clocks, news tickers, and QR codes to enhance your displays."
-          action={<button onClick={() => setShowCreate(true)} className="btn-primary"><Plus size={14} /> Create Widget</button>} />
+          action={<button onClick={openCreate} className="btn-primary"><Plus size={14} /> Create Widget</button>} />
       ) : (
         <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
           {widgets.map(widget => {
@@ -107,6 +140,9 @@ export default function Widgets() {
                     </div>
                   </div>
                   <div className="flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                    <button onClick={() => openEdit(widget)} className="p-1.5 rounded-lg hover:bg-surface-hover text-zinc-500 hover:text-accent">
+                      <Edit3 size={13} />
+                    </button>
                     <button onClick={() => handlePreview(widget)} className="p-1.5 rounded-lg hover:bg-surface-hover text-zinc-500 hover:text-accent">
                       <Eye size={13} />
                     </button>
@@ -122,6 +158,8 @@ export default function Widgets() {
                   {widget.type === 'clock' && <span>{widget.config.hour12 ? '12-hour' : '24-hour'} format</span>}
                   {widget.type === 'weather' && <span>{widget.config.location}</span>}
                   {widget.type === 'qr' && <span className="truncate block">{widget.config.url}</span>}
+                  {widget.type === 'counter' && <span>{widget.config.label}: {widget.config.value}</span>}
+                  {widget.asset_id && <span className="block mt-2 text-emerald-400">Playlist asset ready</span>}
                 </div>
               </div>
             );
@@ -130,7 +168,7 @@ export default function Widgets() {
       )}
 
       {/* Create Modal */}
-      <Modal open={showCreate} onClose={() => { setShowCreate(false); setSelectedType(null); }} title="Create Widget" wide>
+      <Modal open={showCreate} onClose={resetEditor} title={editingWidget ? 'Edit Widget' : 'Create Widget'} wide>
         {!selectedType ? (
           <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
             {widgetTypes.map(wt => (
@@ -163,14 +201,17 @@ export default function Widgets() {
               <div className="grid grid-cols-2 gap-3">
                 <label className="flex items-center gap-2 p-3 rounded-lg bg-surface-overlay cursor-pointer">
                   <input type="checkbox" checked={form.config.hour12}
-                    onChange={(e) => setForm(f => ({ ...f, config: { ...f.config, hour12: e.target.checked } }))} />
+                    onChange={(e) => updateConfig({ hour12: e.target.checked })} />
                   <span className="text-sm text-zinc-300">12-hour format</span>
                 </label>
                 <label className="flex items-center gap-2 p-3 rounded-lg bg-surface-overlay cursor-pointer">
                   <input type="checkbox" checked={form.config.showDate}
-                    onChange={(e) => setForm(f => ({ ...f, config: { ...f.config, showDate: e.target.checked } }))} />
+                    onChange={(e) => updateConfig({ showDate: e.target.checked })} />
                   <span className="text-sm text-zinc-300">Show date</span>
                 </label>
+                <input type="text" value={form.config.timezone || ''}
+                  onChange={(e) => updateConfig({ timezone: e.target.value })}
+                  placeholder="Optional timezone, e.g. America/Chicago" className="col-span-2 w-full" />
               </div>
             )}
 
@@ -178,14 +219,12 @@ export default function Widgets() {
               <div>
                 <label className="block text-xs font-medium text-zinc-400 mb-1.5">Messages (one per line)</label>
                 <textarea value={(form.config.messages || []).join('\n')}
-                  onChange={(e) => setForm(f => ({
-                    ...f, config: { ...f.config, messages: e.target.value.split('\n').filter(Boolean) }
-                  }))}
+                  onChange={(e) => updateConfig({ messages: e.target.value.split('\n').filter(Boolean) })}
                   className="w-full" rows={4} placeholder="Breaking: Special offer today!&#10;Welcome to our store" />
                 <div className="mt-2">
                   <label className="block text-xs font-medium text-zinc-400 mb-1.5">Speed (seconds per cycle)</label>
                   <input type="number" value={form.config.speed || 20}
-                    onChange={(e) => setForm(f => ({ ...f, config: { ...f.config, speed: parseInt(e.target.value) } }))}
+                    onChange={(e) => updateConfig({ speed: parseInt(e.target.value) })}
                     className="w-full" min={5} max={120} />
                 </div>
               </div>
@@ -196,18 +235,42 @@ export default function Widgets() {
                 <div>
                   <label className="block text-xs font-medium text-zinc-400 mb-1.5">Location</label>
                   <input type="text" value={form.config.location || ''}
-                    onChange={(e) => setForm(f => ({ ...f, config: { ...f.config, location: e.target.value } }))}
+                    onChange={(e) => updateConfig({ location: e.target.value })}
                     className="w-full" />
                 </div>
                 <div>
                   <label className="block text-xs font-medium text-zinc-400 mb-1.5">Unit</label>
                   <select value={form.config.unit || 'F'}
-                    onChange={(e) => setForm(f => ({ ...f, config: { ...f.config, unit: e.target.value } }))}
+                    onChange={(e) => updateConfig({ unit: e.target.value })}
                     className="w-full">
                     <option value="F">Fahrenheit</option>
                     <option value="C">Celsius</option>
                   </select>
                 </div>
+                <div>
+                  <label className="block text-xs font-medium text-zinc-400 mb-1.5">Temperature</label>
+                  <input type="text" value={form.config.temp || ''}
+                    onChange={(e) => updateConfig({ temp: e.target.value })} className="w-full" />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-zinc-400 mb-1.5">Condition</label>
+                  <input type="text" value={form.config.condition || ''}
+                    onChange={(e) => updateConfig({ condition: e.target.value })} className="w-full" />
+                </div>
+              </div>
+            )}
+
+            {selectedType === 'rss' && (
+              <div className="space-y-3">
+                <input type="text" value={form.config.title || ''}
+                  onChange={(e) => updateConfig({ title: e.target.value })}
+                  placeholder="Widget title" className="w-full" />
+                <input type="url" value={form.config.url || ''}
+                  onChange={(e) => updateConfig({ url: e.target.value })}
+                  placeholder="RSS URL for reference" className="w-full" />
+                <textarea value={(form.config.items || []).join('\n')}
+                  onChange={(e) => updateConfig({ items: e.target.value.split('\n').filter(Boolean) })}
+                  className="w-full" rows={5} placeholder="Headline one&#10;Headline two" />
               </div>
             )}
 
@@ -216,15 +279,32 @@ export default function Widgets() {
                 <div>
                   <label className="block text-xs font-medium text-zinc-400 mb-1.5">URL</label>
                   <input type="url" value={form.config.url || ''}
-                    onChange={(e) => setForm(f => ({ ...f, config: { ...f.config, url: e.target.value } }))}
+                    onChange={(e) => updateConfig({ url: e.target.value })}
                     className="w-full" placeholder="https://..." />
                 </div>
                 <div>
                   <label className="block text-xs font-medium text-zinc-400 mb-1.5">Label (optional)</label>
                   <input type="text" value={form.config.label || ''}
-                    onChange={(e) => setForm(f => ({ ...f, config: { ...f.config, label: e.target.value } }))}
+                    onChange={(e) => updateConfig({ label: e.target.value })}
                     className="w-full" placeholder="Scan for menu" />
                 </div>
+              </div>
+            )}
+
+            {selectedType === 'counter' && (
+              <div className="grid grid-cols-2 gap-3">
+                <input type="text" value={form.config.label || ''}
+                  onChange={(e) => updateConfig({ label: e.target.value })}
+                  placeholder="Label" className="w-full col-span-2" />
+                <input type="number" value={form.config.value || 0}
+                  onChange={(e) => updateConfig({ value: parseInt(e.target.value) || 0 })}
+                  placeholder="Value" className="w-full" />
+                <input type="text" value={form.config.suffix || ''}
+                  onChange={(e) => updateConfig({ suffix: e.target.value })}
+                  placeholder="Suffix, e.g. +" className="w-full" />
+                <input type="text" value={form.config.prefix || ''}
+                  onChange={(e) => updateConfig({ prefix: e.target.value })}
+                  placeholder="Prefix, e.g. $" className="w-full col-span-2" />
               </div>
             )}
 
@@ -232,14 +312,29 @@ export default function Widgets() {
               <div>
                 <label className="block text-xs font-medium text-zinc-400 mb-1.5">HTML Content</label>
                 <textarea value={form.config.html || ''}
-                  onChange={(e) => setForm(f => ({ ...f, config: { ...f.config, html: e.target.value } }))}
+                  onChange={(e) => updateConfig({ html: e.target.value })}
                   className="w-full font-mono text-xs" rows={8} />
               </div>
             )}
 
+            <div className="grid grid-cols-2 gap-3 rounded-xl bg-surface-overlay p-3">
+              <div>
+                <label className="block text-xs font-medium text-zinc-400 mb-1.5">Text color</label>
+                <input type="text" value={form.style.color || ''}
+                  onChange={(e) => updateStyle({ color: e.target.value })}
+                  placeholder="#ffffff" className="w-full" />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-zinc-400 mb-1.5">Background</label>
+                <input type="text" value={form.style.bg || ''}
+                  onChange={(e) => updateStyle({ bg: e.target.value })}
+                  placeholder="#000000 or gradient" className="w-full" />
+              </div>
+            </div>
+
             <div className="flex gap-2 justify-end pt-2">
-              <button onClick={() => { setShowCreate(false); setSelectedType(null); }} className="btn-secondary">Cancel</button>
-              <button onClick={handleCreate} className="btn-primary">Create Widget</button>
+              <button onClick={resetEditor} className="btn-secondary">Cancel</button>
+              <button onClick={handleSaveWidget} className="btn-primary">{editingWidget ? 'Save Widget' : 'Create Widget'}</button>
             </div>
           </div>
         )}
@@ -247,8 +342,11 @@ export default function Widgets() {
 
       {/* Preview Modal */}
       <Modal open={!!showPreview} onClose={() => setShowPreview(null)} title={showPreview?.name || 'Preview'}>
-        <div className="rounded-xl overflow-hidden border border-surface-border bg-black min-h-[200px]"
-          dangerouslySetInnerHTML={{ __html: previewHtml }} />
+        <iframe
+          title={showPreview?.name || 'Widget preview'}
+          srcDoc={previewHtml}
+          className="w-full h-[420px] rounded-xl border border-surface-border bg-black"
+        />
       </Modal>
     </div>
   );

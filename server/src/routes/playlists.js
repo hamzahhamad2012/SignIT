@@ -32,10 +32,11 @@ router.get('/:id', (req, res) => {
   playlist.layout_config = JSON.parse(playlist.layout_config || '{}');
 
   const items = db.prepare(`
-    SELECT pi.*, a.name as asset_name, a.type as asset_type, a.filename,
+    SELECT pi.*, a.name as asset_name, a.type as asset_type, a.folder_id, f.name as folder_name, a.filename,
            a.mime_type, a.url, a.thumbnail, a.width, a.height, a.duration as asset_duration
     FROM playlist_items pi
     JOIN assets a ON a.id = pi.asset_id
+    LEFT JOIN asset_folders f ON f.id = a.folder_id
     WHERE pi.playlist_id = ?
     ORDER BY pi.zone, pi.position
   `).all(req.params.id);
@@ -139,10 +140,11 @@ router.put('/:id/items', (req, res) => {
   transaction();
 
   const updatedItems = db.prepare(`
-    SELECT pi.*, a.name as asset_name, a.type as asset_type, a.filename,
+    SELECT pi.*, a.name as asset_name, a.type as asset_type, a.folder_id, f.name as folder_name, a.filename,
            a.mime_type, a.url, a.thumbnail
     FROM playlist_items pi
     JOIN assets a ON a.id = pi.asset_id
+    LEFT JOIN asset_folders f ON f.id = a.folder_id
     WHERE pi.playlist_id = ?
     ORDER BY pi.zone, pi.position
   `).all(req.params.id);

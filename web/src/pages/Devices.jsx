@@ -8,7 +8,7 @@ import EmptyState from '../components/EmptyState';
 import AddDisplayWizard from '../components/AddDisplayWizard';
 import {
   Monitor, Search, Filter, Thermometer, Cpu,
-  MemoryStick, Clock, Wifi, RefreshCw, Plus, MapPin,
+  MemoryStick, Clock, Wifi, RefreshCw, Plus, MapPin, RotateCw,
 } from 'lucide-react';
 
 function timeAgo(dateStr) {
@@ -146,6 +146,10 @@ export default function Devices() {
                 <div className="flex items-center gap-1.5 text-xs text-zinc-500">
                   <Clock size={12} />
                   <span>{timeAgo(device.last_seen)}</span>
+                </div>
+                <div className="flex items-center gap-1.5 text-xs text-zinc-500 capitalize">
+                  <RotateCw size={12} />
+                  <span>{device.orientation || 'landscape'}</span>
                 </div>
               </div>
 

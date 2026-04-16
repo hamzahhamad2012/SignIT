@@ -41,9 +41,32 @@ function applyMigrations() {
     )
   `).run();
 
+  db.prepare(`
+    CREATE TABLE IF NOT EXISTS asset_folders (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      parent_id INTEGER REFERENCES asset_folders(id) ON DELETE SET NULL,
+      color TEXT DEFAULT '#6366f1',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(parent_id, name)
+    )
+  `).run();
+
+  if (!hasColumn('assets', 'folder_id')) {
+    db.prepare('ALTER TABLE assets ADD COLUMN folder_id INTEGER REFERENCES asset_folders(id) ON DELETE SET NULL').run();
+  }
+
+  if (!hasColumn('widgets', 'asset_id')) {
+    db.prepare('ALTER TABLE widgets ADD COLUMN asset_id INTEGER REFERENCES assets(id) ON DELETE SET NULL').run();
+  }
+
   db.prepare('CREATE INDEX IF NOT EXISTS idx_users_status ON users(status)').run();
   db.prepare('CREATE INDEX IF NOT EXISTS idx_user_device_permissions_user ON user_device_permissions(user_id)').run();
   db.prepare('CREATE INDEX IF NOT EXISTS idx_user_device_permissions_device ON user_device_permissions(device_id)').run();
+  db.prepare('CREATE INDEX IF NOT EXISTS idx_assets_folder ON assets(folder_id)').run();
+  db.prepare('CREATE INDEX IF NOT EXISTS idx_asset_folders_parent ON asset_folders(parent_id)').run();
+  db.prepare('CREATE INDEX IF NOT EXISTS idx_widgets_asset ON widgets(asset_id)').run();
 
   db.prepare("UPDATE users SET status = 'active' WHERE status IS NULL OR status = ''").run();
 }

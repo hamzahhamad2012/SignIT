@@ -217,7 +217,7 @@ export function getPlaylistContent(playlistId) {
   if (!playlist) return null;
 
   const items = db.prepare(`
-    SELECT pi.*, a.name as asset_name, a.type as asset_type, a.filename,
+    SELECT pi.*, a.name as asset_name, a.type as asset_type, a.folder_id, a.filename,
            a.mime_type, a.url, a.width, a.height, a.duration as asset_duration
     FROM playlist_items pi
     JOIN assets a ON a.id = pi.asset_id
