@@ -7,7 +7,7 @@ import morgan from 'morgan';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 
-import { initDatabase } from './db/index.js';
+import db, { initDatabase } from './db/index.js';
 import { setupSocketHandlers } from './socket/handler.js';
 import authRoutes from './routes/auth.js';
 import userRoutes from './routes/users.js';
@@ -24,6 +24,7 @@ import templateRoutes from './routes/templates.js';
 import setupRoutes from './routes/setup.js';
 import { getSchedulerTimezone } from './services/scheduler.js';
 import { startSchedulerRuntime } from './services/schedulerRuntime.js';
+import { pruneOldActivity } from './services/activityLog.js';
 import { UPLOAD_DIR } from './config/paths.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -95,6 +96,15 @@ if (isProduction) {
 
 setupSocketHandlers(io);
 startSchedulerRuntime(io);
+
+const activityRetentionTimer = setInterval(() => {
+  try {
+    pruneOldActivity(db);
+  } catch (err) {
+    console.error('[Activity] Retention cleanup failed:', err.message);
+  }
+}, 24 * 60 * 60 * 1000);
+activityRetentionTimer.unref?.();
 
 app.use((err, req, res, _next) => {
   console.error('[Error]', err.stack);

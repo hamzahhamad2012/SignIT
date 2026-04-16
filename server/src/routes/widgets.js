@@ -6,6 +6,7 @@ import db from '../db/index.js';
 import { authenticateToken, requireManagementAccess } from '../middleware/auth.js';
 import { UPLOAD_DIR } from '../config/paths.js';
 import { renderWidgetDocument } from '../services/widgetRenderer.js';
+import { logActivity } from '../services/activityLog.js';
 
 const router = Router();
 const HTML_DIR = join(UPLOAD_DIR, 'html');
@@ -107,6 +108,11 @@ router.post('/', asyncHandler(async (req, res) => {
   `).run(name, type, JSON.stringify(config || {}), JSON.stringify(style || {}));
 
   const widget = await syncWidgetAsset(result.lastInsertRowid);
+  logActivity(db, {
+    userId: req.user.id,
+    action: 'widget_created',
+    details: { widget_id: widget.id, name: widget.name, type: widget.type, asset_id: widget.asset_id },
+  });
   res.status(201).json({ widget });
 }));
 
@@ -126,6 +132,11 @@ router.put('/:id', asyncHandler(async (req, res) => {
   db.prepare(`UPDATE widgets SET ${updates.join(', ')} WHERE id = ?`).run(...params);
 
   const widget = await syncWidgetAsset(req.params.id);
+  logActivity(db, {
+    userId: req.user.id,
+    action: 'widget_updated',
+    details: { widget_id: widget.id, name: widget.name, type: widget.type, asset_id: widget.asset_id },
+  });
   res.json({ widget });
 }));
 
@@ -148,12 +159,23 @@ router.delete('/:id', (req, res) => {
   });
   tx();
 
+  logActivity(db, {
+    userId: req.user.id,
+    action: 'widget_deleted',
+    details: { widget_id: widget.id, name: widget.name, type: widget.type, asset_id: widget.asset_id },
+  });
+
   res.json({ success: true });
 });
 
 router.post('/:id/publish', asyncHandler(async (req, res) => {
   const widget = await syncWidgetAsset(req.params.id);
   if (!widget) return res.status(404).json({ error: 'Widget not found' });
+  logActivity(db, {
+    userId: req.user.id,
+    action: 'widget_published',
+    details: { widget_id: widget.id, name: widget.name, type: widget.type, asset_id: widget.asset_id },
+  });
   res.json({ widget });
 }));
 

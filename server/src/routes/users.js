@@ -2,6 +2,7 @@ import { Router } from 'express';
 import db from '../db/index.js';
 import { authenticateToken, requireAdmin } from '../middleware/auth.js';
 import { getUserDeviceIds, replaceUserDeviceAccess } from '../services/userAccess.js';
+import { ACTIVITY_RETENTION_DAYS, getActivityCategory, logActivity } from '../services/activityLog.js';
 
 const router = Router();
 
@@ -44,6 +45,77 @@ router.get('/', (req, res) => {
   });
 
   res.json({ users });
+});
+
+router.get('/:id/activity', (req, res) => {
+  const target = db.prepare('SELECT id, name, email FROM users WHERE id = ?').get(req.params.id);
+  if (!target) return res.status(404).json({ error: 'User not found' });
+
+  const {
+    category = '',
+    action = '',
+    limit = 100,
+    offset = 0,
+  } = req.query;
+  const safeLimit = Math.min(Math.max(parseInt(limit, 10) || 100, 1), 200);
+  const safeOffset = Math.max(parseInt(offset, 10) || 0, 0);
+  const params = [target.id];
+  let where = 'al.user_id = ?';
+
+  if (category) {
+    where += ' AND al.category = ?';
+    params.push(category);
+  }
+
+  if (action) {
+    where += ' AND al.action = ?';
+    params.push(action);
+  }
+
+  const activities = db.prepare(`
+    SELECT al.*, d.name as device_name
+    FROM activity_log al
+    LEFT JOIN devices d ON d.id = al.device_id
+    WHERE ${where}
+    ORDER BY al.created_at DESC
+    LIMIT ? OFFSET ?
+  `).all(...params, safeLimit, safeOffset);
+
+  const total = db.prepare(`
+    SELECT COUNT(*) as count
+    FROM activity_log al
+    WHERE ${where}
+  `).get(...params).count;
+
+  const categories = db.prepare(`
+    SELECT category, COUNT(*) as count
+    FROM activity_log
+    WHERE user_id = ?
+    GROUP BY category
+    ORDER BY category
+  `).all(target.id);
+
+  const actions = db.prepare(`
+    SELECT action, category, COUNT(*) as count
+    FROM activity_log
+    WHERE user_id = ?
+    GROUP BY action, category
+    ORDER BY category, action
+  `).all(target.id);
+
+  activities.forEach((activity) => {
+    activity.details = JSON.parse(activity.details || '{}');
+    activity.category = activity.category || getActivityCategory(activity.action);
+  });
+
+  res.json({
+    user: target,
+    activities,
+    total,
+    categories,
+    actions,
+    retention_days: ACTIVITY_RETENTION_DAYS,
+  });
 });
 
 router.put('/:id', (req, res) => {
@@ -159,15 +231,17 @@ router.put('/:id', (req, res) => {
     ORDER BY d.name
   `).all(user.id);
 
-  db.prepare(`
-    INSERT INTO activity_log (user_id, action, details)
-    VALUES (?, ?, ?)
-  `).run(req.user.id, 'user_permissions_updated', JSON.stringify({
-    target_user_id: user.id,
-    role: user.role,
-    status: user.status,
-    device_ids: user.device_ids,
-  }));
+  logActivity(db, {
+    userId: req.user.id,
+    action: 'user_permissions_updated',
+    details: {
+      target_user_id: user.id,
+      target_user_email: user.email,
+      role: user.role,
+      status: user.status,
+      device_ids: user.device_ids,
+    },
+  });
 
   res.json({ user });
 });

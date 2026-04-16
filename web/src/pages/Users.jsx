@@ -2,8 +2,9 @@ import { useEffect, useState } from 'react';
 import toast from 'react-hot-toast';
 import { api } from '../api/client';
 import { useAuth } from '../context/AuthContext';
+import Modal from '../components/Modal';
 import {
-  Users as UsersIcon, RefreshCw, Save, ShieldCheck, Clock3, Ban, Monitor,
+  Users as UsersIcon, RefreshCw, Save, ShieldCheck, Clock3, Ban, Monitor, Activity, Filter,
 } from 'lucide-react';
 
 const statusStyles = {
@@ -12,12 +13,64 @@ const statusStyles = {
   disabled: 'bg-red-500/10 text-red-400 border border-red-500/20',
 };
 
+const categoryLabels = {
+  auth: 'Login & Auth',
+  users: 'Users',
+  assets: 'Assets',
+  playlists: 'Playlists',
+  schedules: 'Schedules',
+  devices: 'Devices',
+  groups: 'Groups',
+  widgets: 'Widgets',
+  templates: 'Templates',
+  walls: 'Display Walls',
+  setup: 'Setup',
+  system: 'System',
+};
+
+function titleize(value = '') {
+  return String(value || '')
+    .replace(/_/g, ' ')
+    .replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+function formatCategory(category) {
+  return categoryLabels[category] || titleize(category);
+}
+
+function formatDetailValue(value) {
+  if (Array.isArray(value)) {
+    if (value.length === 0) return 'none';
+    const visible = value.slice(0, 3).join(', ');
+    return value.length > 3 ? `${visible} +${value.length - 3} more` : visible;
+  }
+
+  if (value && typeof value === 'object') {
+    return JSON.stringify(value);
+  }
+
+  if (typeof value === 'boolean') return value ? 'yes' : 'no';
+  return String(value);
+}
+
+function activityDetails(details = {}) {
+  const hidden = new Set(['user_agent']);
+  return Object.entries(details)
+    .filter(([key, value]) => !hidden.has(key) && value !== null && value !== undefined && value !== '')
+    .slice(0, 5);
+}
+
 export default function Users() {
   const { user: currentUser } = useAuth();
   const [users, setUsers] = useState([]);
   const [devices, setDevices] = useState([]);
   const [loading, setLoading] = useState(true);
   const [savingId, setSavingId] = useState(null);
+  const [activityUser, setActivityUser] = useState(null);
+  const [activityData, setActivityData] = useState({ activities: [], categories: [], actions: [], total: 0, retention_days: 90 });
+  const [activityLoading, setActivityLoading] = useState(false);
+  const [activityCategory, setActivityCategory] = useState('');
+  const [activityAction, setActivityAction] = useState('');
 
   const load = async () => {
     setLoading(true);
@@ -38,6 +91,31 @@ export default function Users() {
   useEffect(() => {
     load();
   }, []);
+
+  useEffect(() => {
+    if (!activityUser?.id) return undefined;
+
+    let cancelled = false;
+
+    async function loadActivity() {
+      setActivityLoading(true);
+      try {
+        const params = new URLSearchParams({ limit: '100' });
+        if (activityCategory) params.set('category', activityCategory);
+        if (activityAction) params.set('action', activityAction);
+
+        const data = await api.get(`/users/${activityUser.id}/activity?${params.toString()}`);
+        if (!cancelled) setActivityData(data);
+      } catch (err) {
+        if (!cancelled) toast.error(err.message || 'Could not load activity');
+      } finally {
+        if (!cancelled) setActivityLoading(false);
+      }
+    }
+
+    loadActivity();
+    return () => { cancelled = true; };
+  }, [activityUser?.id, activityCategory, activityAction]);
 
   const updateUserDraft = (userId, field, value) => {
     setUsers((current) => current.map((entry) => (
@@ -80,6 +158,19 @@ export default function Users() {
     } finally {
       setSavingId(null);
     }
+  };
+
+  const openActivity = (entry) => {
+    setActivityUser(entry);
+    setActivityData({ activities: [], categories: [], actions: [], total: 0, retention_days: 90 });
+    setActivityCategory('');
+    setActivityAction('');
+  };
+
+  const closeActivity = () => {
+    setActivityUser(null);
+    setActivityCategory('');
+    setActivityAction('');
   };
 
   if (loading) {
@@ -163,6 +254,9 @@ export default function Users() {
                         <ShieldCheck size={15} /> Approve
                       </button>
                     )}
+                    <button onClick={() => openActivity(entry)} className="btn-secondary">
+                      <Activity size={15} /> Activity
+                    </button>
                     <button
                       onClick={() => saveUser(entry)}
                       disabled={savingId === entry.id}
@@ -256,6 +350,114 @@ export default function Users() {
           })}
         </div>
       )}
+      <Modal
+        open={!!activityUser}
+        onClose={closeActivity}
+        title={activityUser ? `${activityUser.name} Activity` : 'User Activity'}
+        wide
+      >
+        <div className="space-y-5">
+          <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
+            <div>
+              <p className="text-sm text-zinc-400">
+                Login history and key dashboard changes for {activityUser?.email}.
+              </p>
+              <p className="text-xs text-zinc-600 mt-1">
+                Activity is automatically kept for {activityData.retention_days || 90} days.
+              </p>
+            </div>
+            <span className="badge bg-surface-overlay text-zinc-400">
+              {activityData.total || 0} matching events
+            </span>
+          </div>
+
+          <div className="grid md:grid-cols-2 gap-3 rounded-xl border border-surface-border bg-surface-overlay p-3">
+            <div>
+              <label className="flex items-center gap-1.5 text-xs font-medium text-zinc-400 mb-1.5">
+                <Filter size={13} /> Category
+              </label>
+              <select
+                value={activityCategory}
+                onChange={(e) => {
+                  setActivityCategory(e.target.value);
+                  setActivityAction('');
+                }}
+                className="w-full"
+              >
+                <option value="">All activity</option>
+                {(activityData.categories || []).map((category) => (
+                  <option key={category.category || 'system'} value={category.category || 'system'}>
+                    {formatCategory(category.category || 'system')} ({category.count})
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-zinc-400 mb-1.5">Action</label>
+              <select
+                value={activityAction}
+                onChange={(e) => setActivityAction(e.target.value)}
+                className="w-full"
+              >
+                <option value="">All actions</option>
+                {(activityData.actions || [])
+                  .filter((action) => !activityCategory || action.category === activityCategory)
+                  .map((action) => (
+                    <option key={`${action.category}-${action.action}`} value={action.action}>
+                      {titleize(action.action)} ({action.count})
+                    </option>
+                  ))}
+              </select>
+            </div>
+          </div>
+
+          {activityLoading ? (
+            <div className="space-y-2">
+              {Array.from({ length: 4 }).map((_, index) => (
+                <div key={index} className="h-20 rounded-xl bg-surface-overlay animate-pulse" />
+              ))}
+            </div>
+          ) : activityData.activities?.length ? (
+            <div className="space-y-2">
+              {activityData.activities.map((event) => {
+                const details = activityDetails(event.details);
+                return (
+                  <div key={event.id} className="rounded-xl border border-surface-border bg-surface-overlay p-3">
+                    <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-2">
+                      <div>
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="text-sm font-semibold text-zinc-100">{titleize(event.action)}</span>
+                          <span className="badge bg-accent/10 text-accent">{formatCategory(event.category)}</span>
+                        </div>
+                        <p className="text-xs text-zinc-500 mt-1">
+                          {new Date(event.created_at).toLocaleString()}
+                          {event.device_name ? ` • ${event.device_name}` : ''}
+                        </p>
+                      </div>
+                    </div>
+
+                    {details.length > 0 && (
+                      <div className="flex flex-wrap gap-1.5 mt-3">
+                        {details.map(([key, value]) => (
+                          <span key={key} className="text-[11px] rounded-md bg-black/20 border border-surface-border px-2 py-1 text-zinc-400">
+                            <span className="text-zinc-500">{titleize(key)}:</span> {formatDetailValue(value)}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="text-center py-10 rounded-xl border border-surface-border bg-surface-overlay">
+              <Activity size={24} className="mx-auto text-zinc-600 mb-2" />
+              <h3 className="text-sm font-semibold text-zinc-200">No activity found</h3>
+              <p className="text-sm text-zinc-500 mt-1">Try clearing the filters or wait for this user to make changes.</p>
+            </div>
+          )}
+        </div>
+      </Modal>
     </div>
   );
 }

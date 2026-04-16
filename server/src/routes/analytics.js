@@ -2,6 +2,7 @@ import { Router } from 'express';
 import db from '../db/index.js';
 import { authenticateToken } from '../middleware/auth.js';
 import { buildDeviceAccessClause, hasManagementAccess } from '../services/userAccess.js';
+import { getActivityCategory } from '../services/activityLog.js';
 
 const router = Router();
 
@@ -59,17 +60,62 @@ router.get('/activity', authenticateToken, (req, res) => {
     return res.status(403).json({ error: 'Insufficient permissions' });
   }
 
-  const { limit = 50, offset = 0 } = req.query;
+  const { limit = 50, offset = 0, user_id, category, action } = req.query;
+  const safeLimit = Math.min(Math.max(parseInt(limit, 10) || 50, 1), 200);
+  const safeOffset = Math.max(parseInt(offset, 10) || 0, 0);
+  const params = [];
+  const clauses = [];
+
+  if (user_id) {
+    clauses.push('al.user_id = ?');
+    params.push(user_id);
+  }
+
+  if (category) {
+    clauses.push('al.category = ?');
+    params.push(category);
+  }
+
+  if (action) {
+    clauses.push('al.action = ?');
+    params.push(action);
+  }
+
+  const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
   const activities = db.prepare(`
     SELECT al.*, u.name as user_name
     FROM activity_log al
     LEFT JOIN users u ON u.id = al.user_id
+    ${where}
     ORDER BY al.created_at DESC
     LIMIT ? OFFSET ?
-  `).all(parseInt(limit), parseInt(offset));
+  `).all(...params, safeLimit, safeOffset);
 
-  activities.forEach(a => { a.details = JSON.parse(a.details || '{}'); });
-  res.json({ activities });
+  const total = db.prepare(`
+    SELECT COUNT(*) as count
+    FROM activity_log al
+    ${where}
+  `).get(...params).count;
+
+  const categories = db.prepare(`
+    SELECT category, COUNT(*) as count
+    FROM activity_log
+    GROUP BY category
+    ORDER BY category
+  `).all();
+
+  const actions = db.prepare(`
+    SELECT action, category, COUNT(*) as count
+    FROM activity_log
+    GROUP BY action, category
+    ORDER BY category, action
+  `).all();
+
+  activities.forEach((activity) => {
+    activity.details = JSON.parse(activity.details || '{}');
+    activity.category = activity.category || getActivityCategory(activity.action);
+  });
+  res.json({ activities, total, categories, actions });
 });
 
 export default router;

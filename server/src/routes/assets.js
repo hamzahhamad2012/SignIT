@@ -8,6 +8,7 @@ import db from '../db/index.js';
 import { authenticateToken, requireManagementAccess } from '../middleware/auth.js';
 import { transcodeVideo, getVideoMeta, convertPdfToImages, convertImage } from '../services/transcode.js';
 import { UPLOAD_DIR } from '../config/paths.js';
+import { logActivity } from '../services/activityLog.js';
 
 const THUMB_DIR = join(UPLOAD_DIR, 'thumbnails');
 
@@ -149,6 +150,11 @@ router.post('/folders', (req, res) => {
       VALUES (?, ?, ?)
     `).run(name, parentId, color);
     const folder = db.prepare('SELECT * FROM asset_folders WHERE id = ?').get(result.lastInsertRowid);
+    logActivity(db, {
+      userId: req.user.id,
+      action: 'folder_created',
+      details: { folder_id: folder.id, name: folder.name },
+    });
     res.status(201).json({ folder: { ...folder, asset_count: 0, total_size: 0 } });
   } catch (err) {
     if (err.code === 'SQLITE_CONSTRAINT_UNIQUE') {
@@ -195,6 +201,11 @@ router.put('/folders/:id', (req, res) => {
     params.push(req.params.id);
     db.prepare(`UPDATE asset_folders SET ${updates.join(', ')} WHERE id = ?`).run(...params);
     const updated = db.prepare('SELECT * FROM asset_folders WHERE id = ?').get(req.params.id);
+    logActivity(db, {
+      userId: req.user.id,
+      action: 'folder_updated',
+      details: { folder_id: updated.id, name: updated.name },
+    });
     res.json({ folder: updated });
   } catch (err) {
     if (err.code === 'SQLITE_CONSTRAINT_UNIQUE') {
@@ -214,6 +225,12 @@ router.delete('/folders/:id', (req, res) => {
     db.prepare('DELETE FROM asset_folders WHERE id = ?').run(req.params.id);
   });
   tx();
+
+  logActivity(db, {
+    userId: req.user.id,
+    action: 'folder_deleted',
+    details: { folder_id: folder.id, name: folder.name },
+  });
 
   res.json({ success: true });
 });
@@ -246,6 +263,11 @@ router.post('/', upload.single('file'), async (req, res) => {
         INSERT INTO assets (name, type, folder_id, url) VALUES (?, ?, ?, ?)
       `).run(name || url, assetType, folderId, url);
       const asset = normalizeAsset(db.prepare('SELECT * FROM assets WHERE id = ?').get(result.lastInsertRowid));
+      logActivity(db, {
+        userId: req.user.id,
+        action: 'asset_created',
+        details: { asset_id: asset.id, name: asset.name, type: asset.type, folder_id: asset.folder_id },
+      });
       return res.status(201).json({ asset });
     }
 
@@ -283,6 +305,17 @@ router.post('/', upload.single('file'), async (req, res) => {
         createdAssets.push(normalizeAsset(db.prepare('SELECT * FROM assets WHERE id = ?').get(r.lastInsertRowid)));
       }
 
+      logActivity(db, {
+        userId: req.user.id,
+        action: 'asset_created',
+        details: {
+          name: displayName,
+          type: 'pdf',
+          folder_id: folderId,
+          pages: createdAssets.length,
+          asset_ids: createdAssets.map((asset) => asset.id),
+        },
+      });
       return res.status(201).json({ asset: createdAssets[0], assets: createdAssets, pages: createdAssets.length });
     }
 
@@ -300,6 +333,11 @@ router.post('/', upload.single('file'), async (req, res) => {
       `).run(displayName, folderId, finalName, req.file.originalname, finalSize, duration, thumbnail);
 
       const asset = normalizeAsset(db.prepare('SELECT * FROM assets WHERE id = ?').get(result.lastInsertRowid));
+      logActivity(db, {
+        userId: req.user.id,
+        action: 'asset_created',
+        details: { asset_id: asset.id, name: asset.name, type: asset.type, folder_id: asset.folder_id },
+      });
       return res.status(201).json({ asset });
     }
 
@@ -325,6 +363,11 @@ router.post('/', upload.single('file'), async (req, res) => {
       `).run(displayName, folderId, finalName, req.file.originalname, finalMime, finalSize, width, height, thumbnail);
 
       const asset = normalizeAsset(db.prepare('SELECT * FROM assets WHERE id = ?').get(result.lastInsertRowid));
+      logActivity(db, {
+        userId: req.user.id,
+        action: 'asset_created',
+        details: { asset_id: asset.id, name: asset.name, type: asset.type, folder_id: asset.folder_id },
+      });
       return res.status(201).json({ asset });
     }
 
@@ -335,6 +378,11 @@ router.post('/', upload.single('file'), async (req, res) => {
     `).run(displayName, folderId, req.file.filename, req.file.originalname, mime, req.file.size);
 
     const asset = normalizeAsset(db.prepare('SELECT * FROM assets WHERE id = ?').get(result.lastInsertRowid));
+    logActivity(db, {
+      userId: req.user.id,
+      action: 'asset_created',
+      details: { asset_id: asset.id, name: asset.name, type: asset.type, folder_id: asset.folder_id },
+    });
     res.status(201).json({ asset });
   } catch (err) {
     console.error('[Assets] Upload error:', err);
@@ -371,6 +419,16 @@ router.put('/:id', (req, res) => {
     LEFT JOIN asset_folders f ON f.id = a.folder_id
     WHERE a.id = ?
   `).get(req.params.id);
+  logActivity(db, {
+    userId: req.user.id,
+    action: folder_id !== undefined && Object.keys(req.body).length === 1 ? 'asset_moved' : 'asset_updated',
+    details: {
+      asset_id: updated.id,
+      name: updated.name,
+      type: updated.type,
+      folder_id: updated.folder_id,
+    },
+  });
   res.json({ asset: normalizeAsset(updated) });
 });
 
@@ -379,7 +437,7 @@ router.delete('/:id', (req, res) => {
   if (!asset) return res.status(404).json({ error: 'Asset not found' });
 
   if (asset.filename) {
-    const subdir = asset.type === 'video' ? 'videos' : asset.type === 'html' ? 'html' : 'images';
+    const subdir = asset.type === 'video' ? 'videos' : ['html', 'widget'].includes(asset.type) ? 'html' : 'images';
     const filepath = join(UPLOAD_DIR, subdir, asset.filename);
     if (existsSync(filepath)) unlinkSync(filepath);
   }
@@ -398,6 +456,11 @@ router.delete('/:id', (req, res) => {
 
   db.prepare('DELETE FROM playlist_items WHERE asset_id = ?').run(req.params.id);
   db.prepare('DELETE FROM assets WHERE id = ?').run(req.params.id);
+  logActivity(db, {
+    userId: req.user.id,
+    action: 'asset_deleted',
+    details: { asset_id: asset.id, name: asset.name, type: asset.type, folder_id: asset.folder_id },
+  });
   res.json({ success: true });
 });
 

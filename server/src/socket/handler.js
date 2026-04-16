@@ -1,4 +1,5 @@
 import db from '../db/index.js';
+import { logActivity } from '../services/activityLog.js';
 
 // Track pending offline timers — don't mark offline instantly on socket disconnect
 const offlineTimers = new Map();
@@ -46,8 +47,11 @@ export function setupSocketHandlers(io) {
         db.prepare("UPDATE devices SET status = 'error' WHERE id = ?").run(deviceId);
         io.emit('device:error', { deviceId, error: data.error });
 
-        db.prepare(`INSERT INTO activity_log (device_id, action, details) VALUES (?, ?, ?)`)
-          .run(deviceId, 'player_error', JSON.stringify(data));
+        logActivity(db, {
+          deviceId,
+          action: 'player_error',
+          details: data,
+        });
       });
 
       socket.on('disconnect', () => {

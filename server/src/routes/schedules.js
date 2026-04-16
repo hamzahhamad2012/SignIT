@@ -2,6 +2,7 @@ import { Router } from 'express';
 import db from '../db/index.js';
 import { authenticateToken, requireManagementAccess } from '../middleware/auth.js';
 import { refreshDevicesForSchedules } from '../services/schedulerRuntime.js';
+import { logActivity } from '../services/activityLog.js';
 
 const router = Router();
 
@@ -60,6 +61,18 @@ router.post('/', (req, res) => {
 
   const schedule = db.prepare('SELECT * FROM schedules WHERE id = ?').get(result.lastInsertRowid);
   refreshDevicesForSchedules(req.app.get('io'), [schedule], 'schedule_created');
+  logActivity(db, {
+    userId: req.user.id,
+    deviceId: schedule.device_id,
+    action: 'schedule_created',
+    details: {
+      schedule_id: schedule.id,
+      name: schedule.name,
+      playlist_id: schedule.playlist_id,
+      group_id: schedule.group_id,
+      device_id: schedule.device_id,
+    },
+  });
   res.status(201).json({ schedule });
 });
 
@@ -85,6 +98,19 @@ router.put('/:id', (req, res) => {
 
   const schedule = db.prepare('SELECT * FROM schedules WHERE id = ?').get(req.params.id);
   refreshDevicesForSchedules(req.app.get('io'), [existing, schedule], 'schedule_updated');
+  logActivity(db, {
+    userId: req.user.id,
+    deviceId: schedule.device_id,
+    action: 'schedule_updated',
+    details: {
+      schedule_id: schedule.id,
+      name: schedule.name,
+      playlist_id: schedule.playlist_id,
+      group_id: schedule.group_id,
+      device_id: schedule.device_id,
+      is_active: Boolean(schedule.is_active),
+    },
+  });
   res.json({ schedule });
 });
 
@@ -96,6 +122,12 @@ router.delete('/:id', (req, res) => {
   if (result.changes === 0) return res.status(404).json({ error: 'Schedule not found' });
 
   refreshDevicesForSchedules(req.app.get('io'), [schedule], 'schedule_deleted');
+  logActivity(db, {
+    userId: req.user.id,
+    deviceId: schedule.device_id,
+    action: 'schedule_deleted',
+    details: { schedule_id: schedule.id, name: schedule.name },
+  });
   res.json({ success: true });
 });
 

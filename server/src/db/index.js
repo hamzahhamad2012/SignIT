@@ -2,6 +2,7 @@ import Database from 'better-sqlite3';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import { schema } from './schema.js';
+import { getActivityCategory, pruneOldActivity } from '../services/activityLog.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 export const DB_PATH = process.env.SIGNIT_DB_PATH || join(__dirname, '..', '..', 'data', 'signit.db');
@@ -61,14 +62,28 @@ function applyMigrations() {
     db.prepare('ALTER TABLE widgets ADD COLUMN asset_id INTEGER REFERENCES assets(id) ON DELETE SET NULL').run();
   }
 
+  if (!hasColumn('activity_log', 'category')) {
+    db.prepare("ALTER TABLE activity_log ADD COLUMN category TEXT DEFAULT 'system'").run();
+  }
+
   db.prepare('CREATE INDEX IF NOT EXISTS idx_users_status ON users(status)').run();
   db.prepare('CREATE INDEX IF NOT EXISTS idx_user_device_permissions_user ON user_device_permissions(user_id)').run();
   db.prepare('CREATE INDEX IF NOT EXISTS idx_user_device_permissions_device ON user_device_permissions(device_id)').run();
   db.prepare('CREATE INDEX IF NOT EXISTS idx_assets_folder ON assets(folder_id)').run();
   db.prepare('CREATE INDEX IF NOT EXISTS idx_asset_folders_parent ON asset_folders(parent_id)').run();
   db.prepare('CREATE INDEX IF NOT EXISTS idx_widgets_asset ON widgets(asset_id)').run();
+  db.prepare('CREATE INDEX IF NOT EXISTS idx_activity_log_user ON activity_log(user_id)').run();
+  db.prepare('CREATE INDEX IF NOT EXISTS idx_activity_log_category ON activity_log(category)').run();
 
   db.prepare("UPDATE users SET status = 'active' WHERE status IS NULL OR status = ''").run();
+  const uncategorized = db.prepare(`
+    SELECT id, action
+    FROM activity_log
+    WHERE category IS NULL OR category = '' OR category = 'system'
+  `).all();
+  const updateCategory = db.prepare('UPDATE activity_log SET category = ? WHERE id = ?');
+  uncategorized.forEach((entry) => updateCategory.run(getActivityCategory(entry.action), entry.id));
+  pruneOldActivity(db);
 }
 
 export function initDatabase() {

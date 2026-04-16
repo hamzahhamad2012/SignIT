@@ -191,6 +191,13 @@ test('core API smoke test covers auth, content, devices, schedules, and player r
     'Content-Type': 'application/json',
   };
 
+  const adminLoginActivity = await request(`/api/users/${login.data.user.id}/activity?category=auth`, {
+    headers: { Authorization: authHeaders.Authorization },
+  });
+  assert.equal(adminLoginActivity.ok, true);
+  assert.equal(adminLoginActivity.data.retention_days, 90);
+  assert.ok(adminLoginActivity.data.activities.some((event) => event.action === 'login_success'));
+
   const [groups, widgets, walls, templates, assetsList, playlistsList, schedulesList, dashboard] = await Promise.all([
     request('/api/groups', { headers: authHeaders }),
     request('/api/widgets', { headers: { Authorization: authHeaders.Authorization } }),
@@ -298,6 +305,12 @@ test('core API smoke test covers auth, content, devices, schedules, and player r
     }),
   });
   assert.equal(playlistItems.ok, true);
+
+  const playlistActivity = await request(`/api/users/${login.data.user.id}/activity?category=playlists`, {
+    headers: { Authorization: authHeaders.Authorization },
+  });
+  assert.equal(playlistActivity.ok, true);
+  assert.ok(playlistActivity.data.activities.some((event) => event.action === 'playlist_items_updated'));
 
   const deviceRegistration = await request('/api/devices/register', {
     method: 'POST',
@@ -447,6 +460,18 @@ test('core API smoke test covers auth, content, devices, schedules, and player r
   });
   assert.equal(approveViewer.ok, true);
   assert.deepEqual(approveViewer.data.user.device_ids, [deviceId]);
+
+  const userActivity = await request(`/api/users/${login.data.user.id}/activity?category=users`, {
+    headers: { Authorization: authHeaders.Authorization },
+  });
+  assert.equal(userActivity.ok, true);
+  assert.ok(userActivity.data.activities.some((event) => event.action === 'user_permissions_updated'));
+
+  const filteredGlobalActivity = await request('/api/analytics/activity?category=auth&limit=10', {
+    headers: { Authorization: authHeaders.Authorization },
+  });
+  assert.equal(filteredGlobalActivity.ok, true);
+  assert.ok(filteredGlobalActivity.data.activities.every((event) => event.category === 'auth'));
 
   const viewerLogin = await request('/api/auth/login', {
     method: 'POST',

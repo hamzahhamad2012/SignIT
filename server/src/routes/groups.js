@@ -2,6 +2,7 @@ import { Router } from 'express';
 import db from '../db/index.js';
 import { authenticateToken, requireManagementAccess } from '../middleware/auth.js';
 import { refreshDevices } from '../services/schedulerRuntime.js';
+import { logActivity } from '../services/activityLog.js';
 
 const router = Router();
 
@@ -44,6 +45,15 @@ router.post('/', (req, res) => {
   `).run(name, description || null, color || '#3b82f6', default_playlist_id || null);
 
   const group = db.prepare('SELECT * FROM groups WHERE id = ?').get(result.lastInsertRowid);
+  logActivity(db, {
+    userId: req.user.id,
+    action: 'group_created',
+    details: {
+      group_id: group.id,
+      name: group.name,
+      default_playlist_id: group.default_playlist_id,
+    },
+  });
   res.status(201).json({ group });
 });
 
@@ -68,13 +78,31 @@ router.put('/:id', (req, res) => {
     const devices = db.prepare('SELECT id FROM devices WHERE group_id = ?').all(req.params.id);
     refreshDevices(req.app.get('io'), devices.map((device) => device.id), 'group_playlist_updated');
   }
+  logActivity(db, {
+    userId: req.user.id,
+    action: 'group_updated',
+    details: {
+      group_id: group.id,
+      name: group.name,
+      fields: updates.map((entry) => entry.split(' = ')[0]),
+      default_playlist_id: group.default_playlist_id,
+    },
+  });
   res.json({ group });
 });
 
 router.delete('/:id', (req, res) => {
+  const group = db.prepare('SELECT * FROM groups WHERE id = ?').get(req.params.id);
+  if (!group) return res.status(404).json({ error: 'Group not found' });
+
   db.prepare('UPDATE devices SET group_id = NULL WHERE group_id = ?').run(req.params.id);
   const result = db.prepare('DELETE FROM groups WHERE id = ?').run(req.params.id);
   if (result.changes === 0) return res.status(404).json({ error: 'Group not found' });
+  logActivity(db, {
+    userId: req.user.id,
+    action: 'group_deleted',
+    details: { group_id: group.id, name: group.name },
+  });
   res.json({ success: true });
 });
 

@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import db from '../db/index.js';
 import { authenticateToken, requireManagementAccess } from '../middleware/auth.js';
+import { logActivity } from '../services/activityLog.js';
 
 const router = Router();
 
@@ -127,6 +128,13 @@ router.post('/seed-builtins', (req, res) => {
       count++;
     }
   }
+  if (count > 0) {
+    logActivity(db, {
+      userId: req.user.id,
+      action: 'template_seeded',
+      details: { added: count },
+    });
+  }
   res.json({ success: true, added: count });
 });
 
@@ -140,12 +148,30 @@ router.post('/', (req, res) => {
 
   const template = db.prepare('SELECT * FROM templates WHERE id = ?').get(result.lastInsertRowid);
   template.config = JSON.parse(template.config || '{}');
+  logActivity(db, {
+    userId: req.user.id,
+    action: 'template_created',
+    details: { template_id: template.id, name: template.name, category: template.category },
+  });
   res.status(201).json({ template });
 });
 
 router.delete('/:id', (req, res) => {
+  const template = db.prepare('SELECT id, name, category, is_builtin FROM templates WHERE id = ?').get(req.params.id);
+  if (!template) return res.status(404).json({ error: 'Template not found' });
+
   const result = db.prepare('DELETE FROM templates WHERE id = ?').run(req.params.id);
   if (result.changes === 0) return res.status(404).json({ error: 'Template not found' });
+  logActivity(db, {
+    userId: req.user.id,
+    action: 'template_deleted',
+    details: {
+      template_id: template.id,
+      name: template.name,
+      category: template.category,
+      is_builtin: Boolean(template.is_builtin),
+    },
+  });
   res.json({ success: true });
 });
 

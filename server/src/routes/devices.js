@@ -4,6 +4,7 @@ import db from '../db/index.js';
 import { authenticateToken, requireManagementAccess } from '../middleware/auth.js';
 import { refreshDevices } from '../services/schedulerRuntime.js';
 import { buildDeviceAccessClause, userCanAccessDevice } from '../services/userAccess.js';
+import { logActivity } from '../services/activityLog.js';
 
 const router = Router();
 
@@ -81,8 +82,11 @@ router.post('/register', (req, res) => {
         WHERE id = ?
       `).run(resolution, os_info, player_version, req.ip, existing.id);
 
-      db.prepare('INSERT INTO activity_log (device_id, action, details) VALUES (?, ?, ?)')
-        .run(existing.id, 'device_reclaimed', JSON.stringify({ mac_address }));
+      logActivity(db, {
+        deviceId: existing.id,
+        action: 'device_reclaimed',
+        details: { mac_address },
+      });
 
       const io = req.app.get('io');
       io.emit('device:status', { deviceId: existing.id, status: 'online' });
@@ -111,8 +115,11 @@ router.post('/register', (req, res) => {
     db.prepare('UPDATE devices SET group_id = ? WHERE id = ?').run(defaultGroup.id, id);
   }
 
-  db.prepare(`INSERT INTO activity_log (action, device_id, details) VALUES (?, ?, ?)`)
-    .run('device_registered', id, JSON.stringify({ name: deviceName, mac_address }));
+  logActivity(db, {
+    deviceId: id,
+    action: 'device_registered',
+    details: { name: deviceName, mac_address },
+  });
 
   const io = req.app.get('io');
   io.emit('device:registered', { deviceId: id, name: deviceName });
@@ -185,12 +192,33 @@ router.put('/:id', authenticateToken, requireManagementAccess, (req, res) => {
     refreshDevices(req.app.get('io'), [req.params.id], 'device_group_updated');
   }
 
+  logActivity(db, {
+    userId: req.user.id,
+    deviceId: req.params.id,
+    action: 'device_updated',
+    details: {
+      device_id: req.params.id,
+      name: updated.name,
+      changed: Object.keys(req.body),
+      orientation: orientation !== undefined ? orientation : undefined,
+      assigned_playlist_id: assigned_playlist_id !== undefined ? assigned_playlist_id : undefined,
+      group_id: group_id !== undefined ? group_id : undefined,
+    },
+  });
+
   res.json({ device: updated });
 });
 
 router.delete('/:id', authenticateToken, requireManagementAccess, (req, res) => {
+  const device = db.prepare('SELECT id, name FROM devices WHERE id = ?').get(req.params.id);
   const result = db.prepare('DELETE FROM devices WHERE id = ?').run(req.params.id);
   if (result.changes === 0) return res.status(404).json({ error: 'Device not found' });
+  logActivity(db, {
+    userId: req.user.id,
+    deviceId: req.params.id,
+    action: 'device_deleted',
+    details: { device_id: req.params.id, name: device?.name },
+  });
   res.json({ success: true });
 });
 
@@ -202,8 +230,12 @@ router.post('/:id/command', authenticateToken, requireManagementAccess, (req, re
   const io = req.app.get('io');
   io.to(`device:${req.params.id}`).emit('command', { command, params: cmdParams });
 
-  db.prepare(`INSERT INTO activity_log (user_id, device_id, action, details) VALUES (?, ?, ?, ?)`)
-    .run(req.user.id, req.params.id, 'command_sent', JSON.stringify({ command, params: cmdParams }));
+  logActivity(db, {
+    userId: req.user.id,
+    deviceId: req.params.id,
+    action: 'command_sent',
+    details: { command, params: cmdParams },
+  });
 
   res.json({ success: true, message: `Command "${command}" sent` });
 });

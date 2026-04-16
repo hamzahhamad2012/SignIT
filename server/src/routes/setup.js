@@ -6,6 +6,7 @@ import { readFileSync, existsSync, readdirSync, statSync } from 'fs';
 import archiver from 'archiver';
 import db from '../db/index.js';
 import { authenticateToken, requireManagementAccess } from '../middleware/auth.js';
+import { logActivity } from '../services/activityLog.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const router = Router();
@@ -51,8 +52,11 @@ router.post('/pairing-token', authenticateToken, requireManagementAccess, (req, 
 
   const token = db.prepare('SELECT * FROM pairing_tokens WHERE id = ?').get(result.lastInsertRowid);
 
-  db.prepare('INSERT INTO activity_log (user_id, action, details) VALUES (?, ?, ?)')
-    .run(req.user.id, 'pairing_token_created', JSON.stringify({ code, name }));
+  logActivity(db, {
+    userId: req.user.id,
+    action: 'pairing_token_created',
+    details: { code, name },
+  });
 
   res.status(201).json({ token });
 });
@@ -70,8 +74,16 @@ router.get('/pairing-tokens', authenticateToken, requireManagementAccess, (req, 
 });
 
 router.delete('/pairing-token/:id', authenticateToken, requireManagementAccess, (req, res) => {
+  const token = db.prepare('SELECT id, code, name FROM pairing_tokens WHERE id = ?').get(req.params.id);
+  if (!token) return res.status(404).json({ error: 'Token not found' });
+
   const result = db.prepare('DELETE FROM pairing_tokens WHERE id = ?').run(req.params.id);
   if (result.changes === 0) return res.status(404).json({ error: 'Token not found' });
+  logActivity(db, {
+    userId: req.user.id,
+    action: 'pairing_token_deleted',
+    details: { pairing_token_id: token.id, code: token.code, name: token.name },
+  });
   res.json({ success: true });
 });
 
@@ -106,8 +118,11 @@ router.post('/register', (req, res) => {
     mac_address || null, resolution || '1920x1080', os_info || null, player_version || '1.0.0',
   );
 
-  db.prepare('INSERT INTO activity_log (device_id, action, details) VALUES (?, ?, ?)')
-    .run(deviceId, 'device_registered', JSON.stringify({ hostname, mac_address }));
+  logActivity(db, {
+    deviceId,
+    action: 'device_registered',
+    details: { hostname, mac_address },
+  });
 
   const io = req.app.get('io');
   io.emit('device:registered', { deviceId, name: deviceName });
@@ -155,8 +170,11 @@ router.post('/pair', (req, res) => {
       db.prepare('UPDATE pairing_tokens SET used_by = ?, used_at = CURRENT_TIMESTAMP WHERE id = ?')
         .run(existing.id, token.id);
 
-      db.prepare('INSERT INTO activity_log (device_id, action, details) VALUES (?, ?, ?)')
-        .run(existing.id, 'device_reclaimed_via_pair', JSON.stringify({ code, mac_address }));
+      logActivity(db, {
+        deviceId: existing.id,
+        action: 'device_reclaimed_via_pair',
+        details: { code, mac_address },
+      });
 
       io.emit('device:status', { deviceId: existing.id, status: 'online' });
 
@@ -188,8 +206,11 @@ router.post('/pair', (req, res) => {
   db.prepare('UPDATE pairing_tokens SET used_by = ?, used_at = CURRENT_TIMESTAMP WHERE id = ?')
     .run(deviceId, token.id);
 
-  db.prepare('INSERT INTO activity_log (device_id, action, details) VALUES (?, ?, ?)')
-    .run(deviceId, 'device_paired', JSON.stringify({ code, name: deviceName }));
+  logActivity(db, {
+    deviceId,
+    action: 'device_paired',
+    details: { code, name: deviceName },
+  });
 
   io.emit('device:paired', { deviceId, name: deviceName });
 

@@ -157,6 +157,7 @@ export const schema = `
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     user_id INTEGER REFERENCES users(id),
     device_id TEXT,
+    category TEXT DEFAULT 'system',
     action TEXT NOT NULL,
     details TEXT DEFAULT '{}',
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
@@ -218,6 +219,8 @@ export const schema = `
   CREATE INDEX IF NOT EXISTS idx_schedules_playlist ON schedules(playlist_id);
   CREATE INDEX IF NOT EXISTS idx_schedules_active ON schedules(is_active);
   CREATE INDEX IF NOT EXISTS idx_activity_log_created ON activity_log(created_at);
+  CREATE INDEX IF NOT EXISTS idx_activity_log_user ON activity_log(user_id);
+  CREATE INDEX IF NOT EXISTS idx_activity_log_category ON activity_log(category);
   CREATE INDEX IF NOT EXISTS idx_wall_screens_wall ON wall_screens(wall_id);
   CREATE INDEX IF NOT EXISTS idx_widgets_type ON widgets(type);
   CREATE INDEX IF NOT EXISTS idx_pairing_tokens_code ON pairing_tokens(code);

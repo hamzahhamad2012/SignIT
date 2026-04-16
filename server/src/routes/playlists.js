@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import db from '../db/index.js';
 import { authenticateToken, requireManagementAccess } from '../middleware/auth.js';
+import { logActivity } from '../services/activityLog.js';
 
 const router = Router();
 
@@ -73,6 +74,11 @@ router.post('/', (req, res) => {
   const playlist = db.prepare('SELECT * FROM playlists WHERE id = ?').get(result.lastInsertRowid);
   playlist.layout_config = JSON.parse(playlist.layout_config || '{}');
   playlist.items = [];
+  logActivity(db, {
+    userId: req.user.id,
+    action: 'playlist_created',
+    details: { playlist_id: playlist.id, name: playlist.name },
+  });
   res.status(201).json({ playlist });
 });
 
@@ -97,12 +103,23 @@ router.put('/:id', (req, res) => {
 
   const updated = db.prepare('SELECT * FROM playlists WHERE id = ?').get(req.params.id);
   updated.layout_config = JSON.parse(updated.layout_config || '{}');
+  logActivity(db, {
+    userId: req.user.id,
+    action: 'playlist_updated',
+    details: { playlist_id: updated.id, name: updated.name },
+  });
   res.json({ playlist: updated });
 });
 
 router.delete('/:id', (req, res) => {
+  const playlist = db.prepare('SELECT * FROM playlists WHERE id = ?').get(req.params.id);
   const result = db.prepare('DELETE FROM playlists WHERE id = ?').run(req.params.id);
   if (result.changes === 0) return res.status(404).json({ error: 'Playlist not found' });
+  logActivity(db, {
+    userId: req.user.id,
+    action: 'playlist_deleted',
+    details: { playlist_id: Number(req.params.id), name: playlist?.name },
+  });
   res.json({ success: true });
 });
 
@@ -154,6 +171,12 @@ router.put('/:id/items', (req, res) => {
   const io = req.app.get('io');
   io.emit('playlist:updated', { playlistId: parseInt(req.params.id) });
 
+  logActivity(db, {
+    userId: req.user.id,
+    action: 'playlist_items_updated',
+    details: { playlist_id: Number(req.params.id), item_count: updatedItems.length },
+  });
+
   res.json({ items: updatedItems });
 });
 
@@ -183,6 +206,18 @@ router.post('/:id/deploy', (req, res) => {
       deployed++;
     }
   }
+
+  logActivity(db, {
+    userId: req.user.id,
+    action: 'playlist_deployed',
+    details: {
+      playlist_id: Number(req.params.id),
+      name: playlist.name,
+      deployed,
+      device_count: device_ids?.length || 0,
+      group_id: group_id || null,
+    },
+  });
 
   res.json({ success: true, deployed });
 });
