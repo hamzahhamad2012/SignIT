@@ -213,14 +213,12 @@ export const schema = `
 
   CREATE INDEX IF NOT EXISTS idx_devices_group ON devices(group_id);
   CREATE INDEX IF NOT EXISTS idx_devices_status ON devices(status);
-  CREATE INDEX IF NOT EXISTS idx_assets_folder ON assets(folder_id);
   CREATE INDEX IF NOT EXISTS idx_asset_folders_parent ON asset_folders(parent_id);
   CREATE INDEX IF NOT EXISTS idx_playlist_items_playlist ON playlist_items(playlist_id);
   CREATE INDEX IF NOT EXISTS idx_schedules_playlist ON schedules(playlist_id);
   CREATE INDEX IF NOT EXISTS idx_schedules_active ON schedules(is_active);
   CREATE INDEX IF NOT EXISTS idx_activity_log_created ON activity_log(created_at);
   CREATE INDEX IF NOT EXISTS idx_activity_log_user ON activity_log(user_id);
-  CREATE INDEX IF NOT EXISTS idx_activity_log_category ON activity_log(category);
   CREATE INDEX IF NOT EXISTS idx_wall_screens_wall ON wall_screens(wall_id);
   CREATE INDEX IF NOT EXISTS idx_widgets_type ON widgets(type);
   CREATE INDEX IF NOT EXISTS idx_pairing_tokens_code ON pairing_tokens(code);

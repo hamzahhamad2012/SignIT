@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
+import Database from 'better-sqlite3';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const serverDir = resolve(__dirname, '..');
@@ -33,6 +34,33 @@ function runNodeScript(scriptPath) {
     const child = spawn('node', [scriptPath], {
       cwd: serverDir,
       env: testEnv,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+
+    let output = '';
+    child.stdout.on('data', (chunk) => {
+      output += chunk.toString();
+    });
+    child.stderr.on('data', (chunk) => {
+      output += chunk.toString();
+    });
+
+    child.on('exit', (code) => {
+      if (code === 0) {
+        resolvePromise(output);
+        return;
+      }
+
+      rejectPromise(new Error(`Command failed (${code}): ${output}`));
+    });
+  });
+}
+
+function runNodeEval(script, env = testEnv) {
+  return new Promise((resolvePromise, rejectPromise) => {
+    const child = spawn('node', ['--input-type=module', '-e', script], {
+      cwd: serverDir,
+      env,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
 
@@ -171,6 +199,125 @@ test('scheduler rules cover all-day, partial-day, and overnight windows', () => 
     ),
     false,
   );
+});
+
+test('database migrations upgrade older production databases before migrated indexes are created', async () => {
+  const legacyDir = mkdtempSync(join(tmpdir(), 'signit-legacy-test-'));
+  const legacyDbPath = join(legacyDir, 'signit.db');
+  const legacyDb = new Database(legacyDbPath);
+
+  try {
+    legacyDb.exec(`
+      CREATE TABLE users (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        email TEXT UNIQUE NOT NULL,
+        password TEXT NOT NULL,
+        name TEXT NOT NULL,
+        role TEXT DEFAULT 'admin',
+        status TEXT DEFAULT 'active',
+        approved_at DATETIME,
+        approved_by INTEGER,
+        avatar TEXT,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      );
+
+      CREATE TABLE groups (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        description TEXT,
+        color TEXT DEFAULT '#3b82f6',
+        default_playlist_id INTEGER,
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      );
+
+      CREATE TABLE devices (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        group_id INTEGER,
+        registered_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        last_seen DATETIME,
+        status TEXT DEFAULT 'offline',
+        ip_address TEXT,
+        mac_address TEXT,
+        resolution TEXT DEFAULT '1920x1080',
+        orientation TEXT DEFAULT 'landscape',
+        os_info TEXT,
+        player_version TEXT,
+        current_playlist_id INTEGER,
+        assigned_playlist_id INTEGER,
+        cpu_temp REAL,
+        cpu_usage REAL,
+        memory_usage REAL,
+        disk_usage REAL,
+        uptime INTEGER,
+        screenshot TEXT,
+        settings TEXT DEFAULT '{}',
+        tags TEXT DEFAULT '[]'
+      );
+
+      CREATE TABLE assets (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        type TEXT NOT NULL,
+        filename TEXT,
+        original_name TEXT,
+        mime_type TEXT,
+        size INTEGER DEFAULT 0,
+        width INTEGER,
+        height INTEGER,
+        duration REAL,
+        thumbnail TEXT,
+        url TEXT,
+        metadata TEXT DEFAULT '{}',
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      );
+
+      CREATE TABLE widgets (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        name TEXT NOT NULL,
+        type TEXT NOT NULL,
+        config TEXT DEFAULT '{}',
+        style TEXT DEFAULT '{}',
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+        updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      );
+
+      CREATE TABLE activity_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER,
+        device_id TEXT,
+        action TEXT NOT NULL,
+        details TEXT DEFAULT '{}',
+        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      );
+    `);
+  } finally {
+    legacyDb.close();
+  }
+
+  await runNodeEval("const { initDatabase } = await import('./src/db/index.js'); initDatabase();", {
+    ...testEnv,
+    SIGNIT_DB_PATH: legacyDbPath,
+  });
+
+  const migrated = new Database(legacyDbPath);
+  try {
+    const assetColumns = migrated.prepare('PRAGMA table_info(assets)').all().map((column) => column.name);
+    const activityColumns = migrated.prepare('PRAGMA table_info(activity_log)').all().map((column) => column.name);
+    const widgetColumns = migrated.prepare('PRAGMA table_info(widgets)').all().map((column) => column.name);
+    const indexes = migrated.prepare("SELECT name FROM sqlite_master WHERE type = 'index'").all().map((index) => index.name);
+
+    assert.ok(assetColumns.includes('folder_id'));
+    assert.ok(activityColumns.includes('category'));
+    assert.ok(widgetColumns.includes('asset_id'));
+    assert.ok(indexes.includes('idx_assets_folder'));
+    assert.ok(indexes.includes('idx_activity_log_category'));
+  } finally {
+    migrated.close();
+    rmSync(legacyDir, { recursive: true, force: true });
+  }
 });
 
 test('core API smoke test covers auth, content, devices, schedules, and player resolution', async () => {
