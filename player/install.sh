@@ -48,7 +48,8 @@ cat > "$CONFIG_FILE" << EOF
   "playlist_check_interval": 60,
   "screenshot_interval": 300,
   "resolution": "1920x1080",
-  "orientation": "landscape"
+  "orientation": "landscape",
+  "display_rotation": "landscape"
 }
 EOF
 

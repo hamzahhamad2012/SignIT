@@ -223,6 +223,7 @@ export default function Schedules() {
                 </div>
                 <div className="flex items-center gap-3 text-xs text-zinc-500 flex-wrap">
                   <span>Playlist: <span className="text-zinc-300">{schedule.playlist_name}</span></span>
+                  {schedule.system_action && <span className="badge bg-sky-500/15 text-sky-300">System</span>}
                   {schedule.group_name && <span>Group: <span className="text-zinc-300">{schedule.group_name}</span></span>}
                   {schedule.device_name && <span>Device: <span className="text-zinc-300">{schedule.device_name}</span></span>}
                   {(schedule.start_time || schedule.end_time) && (
@@ -294,7 +295,11 @@ export default function Schedules() {
               className="w-full"
             >
               <option value="">Select playlist...</option>
-              {playlists.map((playlist) => <option key={playlist.id} value={playlist.id}>{playlist.name}</option>)}
+              {playlists.map((playlist) => (
+                <option key={playlist.id} value={playlist.id}>
+                  {playlist.name}{playlist.is_system ? ' (System)' : ''}
+                </option>
+              ))}
             </select>
           </div>
           <div className="grid grid-cols-2 gap-3">

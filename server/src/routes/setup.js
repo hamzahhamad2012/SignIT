@@ -441,7 +441,8 @@ pair_device() {
   "playlist_check_interval": 60,
   "screenshot_interval": 300,
   "resolution": "$RESOLUTION",
-  "orientation": "landscape"
+  "orientation": "landscape",
+  "display_rotation": "landscape"
 }
 CONFEOF
 

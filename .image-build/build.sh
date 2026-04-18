@@ -3,13 +3,13 @@ set -e
 
 IMG_URL="https://downloads.raspberrypi.com/raspios_arm64/images/raspios_arm64-2024-11-19/2024-11-19-raspios-bookworm-arm64.img.xz"
 CACHE="/cache/raspios-desktop-arm64-20241119.img.xz"
-VERSION="v12"
+VERSION="v1"
 IMG="/work/signit-${VERSION}.img"
 SECTOR=512
 
 echo ""
 echo "════════════════════════════════════════════════════"
-echo "  SignIT Image Builder v12 — OTA updates, folders, widgets, orientation"
+echo "  SignIT Image Builder v1 — OTA updates, TV_OFF, full rotation"
 echo "════════════════════════════════════════════════════"
 
 # ── 1. Download ───────────────────────────────────────────────────────────────

@@ -10,7 +10,7 @@ C='\033[0;36m'; G='\033[0;32m'; R='\033[0;31m'; B='\033[1m'; Y='\033[1;33m'; N='
 
 echo -e "${C}${B}"
 echo "  ╔═══════════════════════════════════════════════════════╗"
-echo "  ║  SignIT OS Image Builder v12                          ║"
+echo "  ║  SignIT OS Image Builder v1                           ║"
 echo "  ║  Full media support + OTA player updates              ║"
 echo "  ╚═══════════════════════════════════════════════════════╝"
 echo -e "${N}"
@@ -37,13 +37,13 @@ set -e
 
 IMG_URL="https://downloads.raspberrypi.com/raspios_arm64/images/raspios_arm64-2024-11-19/2024-11-19-raspios-bookworm-arm64.img.xz"
 CACHE="/cache/raspios-desktop-arm64-20241119.img.xz"
-VERSION="v12"
+VERSION="v1"
 IMG="/work/signit-${VERSION}.img"
 SECTOR=512
 
 echo ""
 echo "════════════════════════════════════════════════════"
-echo "  SignIT Image Builder v12 — OTA updates, folders, widgets, orientation"
+echo "  SignIT Image Builder v1 — OTA updates, TV_OFF, full rotation"
 echo "════════════════════════════════════════════════════"
 
 # ── 1. Download ───────────────────────────────────────────────────────────────

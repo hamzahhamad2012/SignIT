@@ -14,7 +14,7 @@ Controls:
 import curses, subprocess, socket, time, threading, json, os, hashlib
 import urllib.request, urllib.error
 
-VERSION     = '1.2.0'
+VERSION     = '1.3.0'
 CONFIG_PATH = '/opt/signit/config.json'
 SETUP_DONE  = '/opt/signit/.setup-complete'
 

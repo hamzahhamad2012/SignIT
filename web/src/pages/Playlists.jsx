@@ -93,10 +93,12 @@ export default function Playlists() {
                     <p className="text-xs text-zinc-500">{playlist.item_count} item{playlist.item_count !== 1 && 's'}</p>
                   </div>
                 </div>
-                <button onClick={(e) => handleDelete(playlist.id, e)}
-                  className="p-1.5 rounded-lg opacity-0 group-hover:opacity-100 hover:bg-red-500/10 text-zinc-500 hover:text-red-400 transition-all">
-                  <Trash2 size={14} />
-                </button>
+                {!playlist.is_system && (
+                  <button onClick={(e) => handleDelete(playlist.id, e)}
+                    className="p-1.5 rounded-lg opacity-0 group-hover:opacity-100 hover:bg-red-500/10 text-zinc-500 hover:text-red-400 transition-all">
+                    <Trash2 size={14} />
+                  </button>
+                )}
               </div>
 
               {playlist.description && (
@@ -104,7 +106,7 @@ export default function Playlists() {
               )}
 
               <div className="flex items-center gap-3 text-xs text-zinc-500">
-                <span className="badge bg-surface-overlay">{layoutLabels[playlist.layout] || playlist.layout}</span>
+                <span className="badge bg-surface-overlay">{playlist.is_system ? 'System' : (layoutLabels[playlist.layout] || playlist.layout)}</span>
                 <span className="capitalize">{playlist.transition}</span>
               </div>
             </Link>

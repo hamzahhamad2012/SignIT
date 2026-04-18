@@ -1,4 +1,5 @@
 import db from '../db/index.js';
+import { decoratePlaylist } from './systemPlaylists.js';
 
 const DEFAULT_DAYS = ['0', '1', '2', '3', '4', '5', '6'];
 const WEEKDAY_INDEX = {
@@ -215,6 +216,14 @@ export function getDevicesImpactedBySchedules(schedules = []) {
 export function getPlaylistContent(playlistId) {
   const playlist = db.prepare('SELECT * FROM playlists WHERE id = ?').get(playlistId);
   if (!playlist) return null;
+  decoratePlaylist(playlist);
+
+  if (playlist.system_action) {
+    return {
+      ...playlist,
+      items: [],
+    };
+  }
 
   const items = db.prepare(`
     SELECT pi.*, a.name as asset_name, a.type as asset_type, a.folder_id, a.filename,
@@ -227,7 +236,6 @@ export function getPlaylistContent(playlistId) {
 
   return {
     ...playlist,
-    layout_config: JSON.parse(playlist.layout_config || '{}'),
     items: items.map((item) => ({
       ...item,
       settings: JSON.parse(item.settings || '{}'),

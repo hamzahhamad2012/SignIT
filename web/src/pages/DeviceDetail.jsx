@@ -11,6 +11,13 @@ import {
   Clock, Wifi, RotateCw, Camera, Trash2, Edit3, Save, Power, MapPin, Send, Loader2, Download,
 } from 'lucide-react';
 
+const displayRotations = [
+  { value: 'landscape', label: 'Landscape', helper: '0°' },
+  { value: 'landscape-flipped', label: 'Flipped', helper: '180°' },
+  { value: 'portrait-right', label: 'Portrait Right', helper: '90°' },
+  { value: 'portrait-left', label: 'Portrait Left', helper: '270°' },
+];
+
 export default function DeviceDetail() {
   const { id } = useParams();
   const navigate = useNavigate();
@@ -110,12 +117,12 @@ export default function DeviceDetail() {
     return interval;
   }, [id]);
 
-  const sendCommand = useCallback((command) => {
+  const sendCommand = useCallback((command, params = undefined) => {
     setPendingCmd(command);
     if (cmdTimeout.current) clearTimeout(cmdTimeout.current);
     cmdTimeout.current = setTimeout(() => setPendingCmd(null), command === 'update_player' ? 90000 : 15000);
 
-    api.post(`/devices/${id}/command`, { command }).then((result) => {
+    api.post(`/devices/${id}/command`, { command, params }).then((result) => {
       if (command === 'screenshot') {
         // Poll for the updated screenshot since socket delivery is unreliable for large payloads
         pollForScreenshot(device?.screenshot || null);
@@ -152,11 +159,11 @@ export default function DeviceDetail() {
     toast.success('Group updated');
   };
 
-  const handleOrientationChange = async (orientation) => {
-    await api.put(`/devices/${id}`, { orientation });
+  const handleOrientationChange = async (displayRotation) => {
+    await api.put(`/devices/${id}`, { display_rotation: displayRotation });
     const updated = await api.get(`/devices/${id}`);
     setDevice(updated.device);
-    toast.success(`Orientation set to ${orientation}. Online players will rotate shortly.`);
+    toast.success(`Rotation set to ${displayRotation}. Online players will rotate shortly.`);
   };
 
   const handleSaveLocation = async () => {
@@ -181,6 +188,7 @@ export default function DeviceDetail() {
     { label: 'Memory', value: device.memory_usage != null ? `${Number(device.memory_usage).toFixed(0)}%` : '—', icon: MemoryStick, color: 'text-violet-400' },
     { label: 'Disk', value: device.disk_usage != null ? `${Number(device.disk_usage).toFixed(0)}%` : '—', icon: HardDrive, color: 'text-pink-400' },
   ];
+  const currentDisplayRotation = device.display_rotation || (device.orientation === 'portrait' ? 'portrait-right' : 'landscape');
 
   return (
     <div className="space-y-5">
@@ -233,7 +241,7 @@ export default function DeviceDetail() {
                 ['MAC Address', device.mac_address || '—'],
                 ['IP Address', device.ip_address || '—'],
                 ['Resolution', device.resolution],
-                ['Orientation', device.orientation],
+                ['Orientation', device.display_rotation_label || device.orientation],
                 ['OS', device.os_info || '—'],
                 ['Player Version', device.player_version || '—'],
                 ['Latest Player', device.latest_player_version || '—'],
@@ -333,28 +341,26 @@ export default function DeviceDetail() {
             {canManage ? (
               <div className="space-y-2">
                 <div className="grid grid-cols-2 gap-2">
-                  {[
-                    { value: 'landscape', label: 'Landscape' },
-                    { value: 'portrait', label: 'Portrait' },
-                  ].map(option => (
+                  {displayRotations.map(option => (
                     <button
                       key={option.value}
                       onClick={() => handleOrientationChange(option.value)}
-                      className={`btn text-xs ${device.orientation === option.value
+                      className={`btn text-xs ${currentDisplayRotation === option.value
                         ? 'bg-accent/15 text-accent border border-accent/30'
                         : 'bg-surface-raised hover:bg-surface-hover text-zinc-400 border border-surface-border'
                       }`}
                     >
                       <RotateCw size={13} /> {option.label}
+                      <span className="text-[10px] opacity-60">{option.helper}</span>
                     </button>
                   ))}
                 </div>
                 <p className="text-xs text-zinc-600">
-                  Use portrait for vertical menu boards. The Pi applies this with xrandr and restarts Chromium if needed.
+                  Use the exact rotation that matches how the TV was mounted. The Pi applies this with xrandr and falls back to CSS rotation if needed.
                 </p>
               </div>
             ) : (
-              <p className="text-sm text-zinc-300 capitalize">{device.orientation}</p>
+              <p className="text-sm text-zinc-300 capitalize">{device.display_rotation_label || device.orientation}</p>
             )}
           </div>
 
@@ -461,10 +467,12 @@ export default function DeviceDetail() {
                     { cmd: 'restart_player', label: 'Restart', Icon: RotateCw },
                     { cmd: 'screenshot', label: 'Screenshot', Icon: Camera },
                     { cmd: 'refresh', label: 'Refresh', Icon: RotateCw },
-                  ].map(({ cmd, label, Icon }) => (
+                    { cmd: 'display_power', label: 'TV On', Icon: Monitor, params: { state: 'on' } },
+                    { cmd: 'display_power', label: 'TV Off', Icon: Power, params: { state: 'off' } },
+                  ].map(({ cmd, label, Icon, params }) => (
                     <button
-                      key={cmd}
-                      onClick={() => sendCommand(cmd)}
+                      key={label}
+                      onClick={() => sendCommand(cmd, params)}
                       disabled={!!pendingCmd}
                       className="btn-secondary text-xs disabled:opacity-50"
                     >

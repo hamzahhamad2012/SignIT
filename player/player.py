@@ -26,7 +26,7 @@ import psutil
 from config import load_config, save_config, CACHE_DIR, LOG_DIR
 
 CONTENT_SERVER_PORT = 8889
-PLAYER_VERSION = '1.2.0'
+PLAYER_VERSION = '1.3.0'
 UPDATE_FILES = {
     'player.py',
     'config.py',
@@ -34,6 +34,13 @@ UPDATE_FILES = {
     'setup_tui.py',
     'requirements.txt',
     'setup_ui/index.html',
+}
+DISPLAY_ROTATIONS = {
+    'landscape': {'xrandr': 'normal', 'degrees': 0, 'orientation': 'landscape'},
+    'landscape-flipped': {'xrandr': 'inverted', 'degrees': 180, 'orientation': 'landscape'},
+    'portrait-right': {'xrandr': 'right', 'degrees': 90, 'orientation': 'portrait'},
+    'portrait-left': {'xrandr': 'left', 'degrees': 270, 'orientation': 'portrait'},
+    'portrait': {'xrandr': 'right', 'degrees': 90, 'orientation': 'portrait'},
 }
 
 logging.basicConfig(
@@ -86,6 +93,8 @@ class SignITPlayer:
                 self._refresh_content()
             elif cmd == 'update_player':
                 threading.Thread(target=self._update_player, args=(params,), daemon=True).start()
+            elif cmd == 'display_power':
+                self._set_display_power(params.get('state', 'on'))
 
         @self.sio.on('playlist:deploy')
         def on_playlist_deploy(data):
@@ -226,12 +235,21 @@ class SignITPlayer:
             current_hash = hashlib.md5(json.dumps(self.current_playlist, sort_keys=True).encode()).hexdigest() if self.current_playlist else None
 
             if playlist_hash == current_hash:
+                if playlist.get('system_action') == 'display_off':
+                    self._set_display_power('off')
+                    return
                 self._ensure_chromium_alive()
                 return
 
             log.info(f'Loading playlist: {playlist["name"]} ({len(playlist.get("items", []))} items)')
             self.current_playlist = playlist
 
+            if playlist.get('system_action') == 'display_off':
+                self._show_power_message('Display is scheduled off')
+                self._set_display_power('off')
+                return
+
+            self._set_display_power('on')
             self._download_assets(playlist.get('items', []))
             self._generate_display_html(playlist)
             self._launch_chromium()
@@ -245,21 +263,23 @@ class SignITPlayer:
         """Pull device settings from the server and apply display-level changes."""
         try:
             server_config = self._api_get('/api/player/config', device_header=True)
-            previous_orientation = self.config.get('orientation', 'landscape')
-            orientation = server_config.get('orientation') or 'landscape'
-            if orientation not in ('landscape', 'portrait'):
-                orientation = 'landscape'
+            previous_rotation = self.config.get('display_rotation') or self.config.get('orientation', 'landscape')
+            display_rotation = server_config.get('display_rotation') or server_config.get('orientation') or 'landscape'
+            if display_rotation not in DISPLAY_ROTATIONS:
+                display_rotation = 'landscape'
 
-            self.config['orientation'] = orientation
+            rotation_info = DISPLAY_ROTATIONS[display_rotation]
+            self.config['display_rotation'] = display_rotation
+            self.config['orientation'] = rotation_info['orientation']
             if server_config.get('resolution'):
                 self.config['resolution'] = server_config.get('resolution')
             save_config(self.config)
 
-            changed = previous_orientation != orientation
-            self._apply_orientation(orientation)
+            changed = previous_rotation != display_rotation
+            self._apply_orientation(display_rotation)
 
             if force_restart or changed:
-                log.info(f'Display config changed: orientation={orientation}')
+                log.info(f'Display config changed: rotation={display_rotation}')
                 self.current_playlist = None
                 if self.chromium_proc and self.chromium_proc.poll() is None:
                     self.chromium_proc.terminate()
@@ -278,7 +298,8 @@ class SignITPlayer:
         """Rotate the X display for physically vertical or horizontal screens."""
         env = os.environ.copy()
         env.setdefault('DISPLAY', ':0')
-        rotation = 'right' if orientation == 'portrait' else 'normal'
+        rotation_info = DISPLAY_ROTATIONS.get(orientation, DISPLAY_ROTATIONS['landscape'])
+        rotation = rotation_info['xrandr']
 
         try:
             query = subprocess.run(
@@ -308,9 +329,58 @@ class SignITPlayer:
             time.sleep(1)
             return True
         except Exception as e:
-            self.rotation_fallback = orientation == 'portrait'
+            self.rotation_fallback = orientation if orientation != 'landscape' else False
             log.warning(f'xrandr orientation failed, using CSS fallback: {e}')
             return False
+
+    def _run_display_command(self, command, env=None):
+        try:
+            if shutil.which(command[0]) is None:
+                return False
+            result = subprocess.run(command, capture_output=True, text=True, env=env, timeout=8)
+            if result.returncode == 0:
+                return True
+            if result.stderr:
+                log.debug(f'Display command failed {command}: {result.stderr.strip()}')
+            return False
+        except Exception as e:
+            log.debug(f'Display command error {command}: {e}')
+            return False
+
+    def _set_display_power(self, state):
+        """Turn the attached display on or off using the best available Pi/X11 method."""
+        desired = 'off' if str(state).lower() in ('off', '0', 'false') else 'on'
+        env = os.environ.copy()
+        env.setdefault('DISPLAY', ':0')
+
+        commands = []
+        if desired == 'off':
+            commands = [
+                ['xset', 's', 'off'],
+                ['xset', '+dpms'],
+                ['xset', 'dpms', 'force', 'off'],
+                ['vcgencmd', 'display_power', '0'],
+            ]
+        else:
+            commands = [
+                ['vcgencmd', 'display_power', '1'],
+                ['xset', 'dpms', 'force', 'on'],
+                ['xset', 's', 'reset'],
+                ['xset', 's', 'off'],
+                ['xset', '-dpms'],
+            ]
+
+        successes = sum(1 for command in commands if self._run_display_command(command, env=env))
+        if desired == 'on':
+            self._apply_orientation(self.config.get('display_rotation') or self.config.get('orientation', 'landscape'))
+
+        log.info(f'Display power {desired} requested ({successes}/{len(commands)} commands succeeded)')
+        if self.sio.connected:
+            self.sio.emit('player:status', {
+                'display_power': desired,
+                'display_power_commands_ok': successes,
+            })
+        return successes > 0
 
     def _ensure_chromium_alive(self):
         """Relaunch Chromium if it crashed or was killed."""
@@ -360,8 +430,12 @@ class SignITPlayer:
         bg_color = playlist.get('bg_color', '#000000')
         layout = playlist.get('layout', 'fullscreen')
         player_css = '#player{position:fixed;inset:0;}'
-        if self.config.get('orientation') == 'portrait' and self.rotation_fallback:
-            player_css = '#player{position:fixed;top:50%;left:50%;width:100vh;height:100vw;transform:translate(-50%,-50%) rotate(90deg);transform-origin:center center;}'
+        if self.rotation_fallback:
+            degrees = DISPLAY_ROTATIONS.get(self.rotation_fallback, DISPLAY_ROTATIONS['landscape'])['degrees']
+            if degrees in (90, 270):
+                player_css = f'#player{{position:fixed;top:50%;left:50%;width:100vh;height:100vw;transform:translate(-50%,-50%) rotate({degrees}deg);transform-origin:center center;}}'
+            elif degrees == 180:
+                player_css = '#player{position:fixed;inset:0;transform:rotate(180deg);transform-origin:center center;}'
 
         single_item = len(items) == 1
         slides_html = ''
@@ -458,15 +532,14 @@ html,body{{width:100%;height:100%;overflow:hidden;background:{bg_color}}}
             f.write(html)
         log.info('Display HTML generated')
 
-    def _show_standby(self):
-        """Show standby screen when no playlist is assigned."""
-        html = '''<!DOCTYPE html>
+    def _write_simple_screen(self, title, message, background='#09090b'):
+        html = f'''<!DOCTYPE html>
 <html><head><meta charset="UTF-8">
 <style>
   * { margin:0; padding:0; }
   body {
     width:100vw; height:100vh; display:flex; align-items:center; justify-content:center;
-    background:#09090b; color:#fff; font-family:system-ui;
+    background:{background}; color:#fff; font-family:system-ui;
     flex-direction:column; gap:20px;
   }
   .logo { width:80px; height:80px; border-radius:20px; background:linear-gradient(135deg,#6366f1,#7c3aed);
@@ -475,13 +548,23 @@ html,body{{width:100%;height:100%;overflow:hidden;background:{bg_color}}}
   p { color:#71717a; font-size:14px; }
 </style></head><body>
 <div class="logo">S</div>
-<h1>SignIT</h1>
-<p>Waiting for content...</p>
+<h1>{title}</h1>
+<p>{message}</p>
 </body></html>'''
 
         display_path = os.path.join(CACHE_DIR, 'display.html')
         with open(display_path, 'w') as f:
             f.write(html)
+
+    def _show_power_message(self, message):
+        """Show a black handoff page before powering the display down."""
+        self._write_simple_screen('SignIT', message, '#000000')
+        self._launch_chromium()
+
+    def _show_standby(self):
+        """Show standby screen when no playlist is assigned."""
+        self._set_display_power('on')
+        self._write_simple_screen('SignIT', 'Waiting for content...')
         self._launch_chromium()
 
     def _get_screen_resolution(self):

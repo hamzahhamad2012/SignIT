@@ -3,6 +3,7 @@ import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import { schema } from './schema.js';
 import { getActivityCategory, pruneOldActivity } from '../services/activityLog.js';
+import { ensureSystemPlaylists } from '../services/systemPlaylists.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 export const DB_PATH = process.env.SIGNIT_DB_PATH || join(__dirname, '..', '..', 'data', 'signit.db');
@@ -104,6 +105,7 @@ function applyMigrations() {
 export function initDatabase() {
   db.exec(schema);
   applyMigrations();
+  ensureSystemPlaylists(db);
   console.log('[DB] Database initialized');
 }
 

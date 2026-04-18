@@ -7,12 +7,17 @@ import { buildDeviceAccessClause, userCanAccessDevice } from '../services/userAc
 import { logActivity } from '../services/activityLog.js';
 import { getLatestPlayerVersion, isPlayerOutdated } from '../services/playerVersion.js';
 import { queuePlayerUpdate, sendQueuedPlayerUpdate } from '../services/playerUpdates.js';
+import { DISPLAY_ROTATIONS, getDeviceDisplayRotation, getDisplayRotation } from '../services/displayRotation.js';
 
 const router = Router();
 
 function annotatePlayerVersion(device, latestVersion = getLatestPlayerVersion()) {
   device.latest_player_version = latestVersion;
   device.needs_player_update = isPlayerOutdated(device.player_version, latestVersion);
+  const rotation = getDeviceDisplayRotation(device);
+  device.display_rotation = rotation.value;
+  device.display_rotation_label = rotation.label;
+  device.display_rotation_degrees = rotation.degrees;
   return device;
 }
 
@@ -65,6 +70,10 @@ router.get('/stats', authenticateToken, (req, res) => {
 
 router.get('/player/latest', authenticateToken, requireManagementAccess, (req, res) => {
   res.json({ version: getLatestPlayerVersion() });
+});
+
+router.get('/display-rotations/options', authenticateToken, (req, res) => {
+  res.json({ rotations: DISPLAY_ROTATIONS });
 });
 
 router.post('/update-player', authenticateToken, requireManagementAccess, (req, res) => {
@@ -225,7 +234,7 @@ router.post('/register', (req, res) => {
 });
 
 router.put('/:id', authenticateToken, requireManagementAccess, (req, res) => {
-  const { name, group_id, orientation, assigned_playlist_id, settings, tags,
+  const { name, group_id, orientation, display_rotation, assigned_playlist_id, settings, tags,
           location_name, location_address, location_city, location_state,
           location_zip, location_country, location_lat, location_lng, location_notes } = req.body;
   const device = db.prepare('SELECT * FROM devices WHERE id = ?').get(req.params.id);
@@ -233,18 +242,20 @@ router.put('/:id', authenticateToken, requireManagementAccess, (req, res) => {
 
   const updates = [];
   const params = [];
+  let nextSettings = settings !== undefined ? { ...(settings || {}) } : JSON.parse(device.settings || '{}');
+  let shouldUpdateSettings = settings !== undefined;
 
   if (name !== undefined) { updates.push('name = ?'); params.push(name); }
   if (group_id !== undefined) { updates.push('group_id = ?'); params.push(group_id); }
-  if (orientation !== undefined) {
-    if (!['landscape', 'portrait'].includes(orientation)) {
-      return res.status(400).json({ error: 'Invalid orientation' });
-    }
+  if (orientation !== undefined || display_rotation !== undefined) {
+    const rotation = getDisplayRotation(display_rotation ?? orientation);
     updates.push('orientation = ?');
-    params.push(orientation);
+    params.push(rotation.orientation);
+    nextSettings = { ...nextSettings, display_rotation: rotation.value };
+    shouldUpdateSettings = true;
   }
   if (assigned_playlist_id !== undefined) { updates.push('assigned_playlist_id = ?'); params.push(assigned_playlist_id); }
-  if (settings !== undefined) { updates.push('settings = ?'); params.push(JSON.stringify(settings)); }
+  if (shouldUpdateSettings) { updates.push('settings = ?'); params.push(JSON.stringify(nextSettings)); }
   if (tags !== undefined) { updates.push('tags = ?'); params.push(JSON.stringify(tags)); }
   if (location_name !== undefined) { updates.push('location_name = ?'); params.push(location_name); }
   if (location_address !== undefined) { updates.push('location_address = ?'); params.push(location_address); }
@@ -264,6 +275,7 @@ router.put('/:id', authenticateToken, requireManagementAccess, (req, res) => {
   const updated = db.prepare('SELECT * FROM devices WHERE id = ?').get(req.params.id);
   updated.settings = JSON.parse(updated.settings || '{}');
   updated.tags = JSON.parse(updated.tags || '[]');
+  annotatePlayerVersion(updated);
 
   if (assigned_playlist_id !== undefined) {
     const io = req.app.get('io');
@@ -274,11 +286,11 @@ router.put('/:id', authenticateToken, requireManagementAccess, (req, res) => {
     }
   }
 
-  if (orientation !== undefined) {
+  if (orientation !== undefined || display_rotation !== undefined) {
     const io = req.app.get('io');
     io.to(`device:${req.params.id}`).emit('command', {
       command: 'refresh_config',
-      params: { orientation },
+      params: { display_rotation: updated.display_rotation, orientation: updated.orientation },
     });
   }
 
@@ -294,7 +306,8 @@ router.put('/:id', authenticateToken, requireManagementAccess, (req, res) => {
       device_id: req.params.id,
       name: updated.name,
       changed: Object.keys(req.body),
-      orientation: orientation !== undefined ? orientation : undefined,
+      orientation: updated.orientation,
+      display_rotation: updated.display_rotation,
       assigned_playlist_id: assigned_playlist_id !== undefined ? assigned_playlist_id : undefined,
       group_id: group_id !== undefined ? group_id : undefined,
     },

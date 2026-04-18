@@ -2,6 +2,7 @@ import { Router } from 'express';
 import db from '../db/index.js';
 import { authenticateToken, requireManagementAccess } from '../middleware/auth.js';
 import { logActivity } from '../services/activityLog.js';
+import { decoratePlaylist, isSystemPlaylist } from '../services/systemPlaylists.js';
 
 const router = Router();
 
@@ -20,9 +21,7 @@ router.get('/', (req, res) => {
   query += ' GROUP BY p.id ORDER BY p.updated_at DESC';
 
   const playlists = db.prepare(query).all(...params);
-  playlists.forEach(p => {
-    p.layout_config = JSON.parse(p.layout_config || '{}');
-  });
+  playlists.forEach(decoratePlaylist);
   res.json({ playlists });
 });
 
@@ -30,7 +29,7 @@ router.get('/:id', (req, res) => {
   const playlist = db.prepare('SELECT * FROM playlists WHERE id = ?').get(req.params.id);
   if (!playlist) return res.status(404).json({ error: 'Playlist not found' });
 
-  playlist.layout_config = JSON.parse(playlist.layout_config || '{}');
+  decoratePlaylist(playlist);
 
   const items = db.prepare(`
     SELECT pi.*, a.name as asset_name, a.type as asset_type, a.folder_id, f.name as folder_name, a.filename,
@@ -86,6 +85,7 @@ router.put('/:id', (req, res) => {
   const { name, description, layout, layout_config, transition, transition_duration, bg_color } = req.body;
   const playlist = db.prepare('SELECT * FROM playlists WHERE id = ?').get(req.params.id);
   if (!playlist) return res.status(404).json({ error: 'Playlist not found' });
+  if (isSystemPlaylist(playlist)) return res.status(400).json({ error: 'System playlists are fixed and cannot be edited' });
 
   const updates = ['updated_at = CURRENT_TIMESTAMP'];
   const params = [];
@@ -113,6 +113,9 @@ router.put('/:id', (req, res) => {
 
 router.delete('/:id', (req, res) => {
   const playlist = db.prepare('SELECT * FROM playlists WHERE id = ?').get(req.params.id);
+  if (playlist && isSystemPlaylist(playlist)) {
+    return res.status(400).json({ error: 'System playlists are fixed and cannot be deleted' });
+  }
   const result = db.prepare('DELETE FROM playlists WHERE id = ?').run(req.params.id);
   if (result.changes === 0) return res.status(404).json({ error: 'Playlist not found' });
   logActivity(db, {
@@ -129,6 +132,7 @@ router.put('/:id/items', (req, res) => {
 
   const playlist = db.prepare('SELECT * FROM playlists WHERE id = ?').get(req.params.id);
   if (!playlist) return res.status(404).json({ error: 'Playlist not found' });
+  if (isSystemPlaylist(playlist)) return res.status(400).json({ error: 'System playlists are fixed and cannot contain custom items' });
 
   const transaction = db.transaction(() => {
     db.prepare('DELETE FROM playlist_items WHERE playlist_id = ?').run(req.params.id);

@@ -195,7 +195,7 @@ export default function Devices() {
                 </div>
                 <div className="flex items-center gap-1.5 text-xs text-zinc-500 capitalize">
                   <RotateCw size={12} />
-                  <span>{device.orientation || 'landscape'}</span>
+                  <span>{device.display_rotation_label || device.orientation || 'landscape'}</span>
                 </div>
               </div>
 

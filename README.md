@@ -26,7 +26,8 @@ Core capabilities:
 - Build playlists from images, videos, HTML, URLs, streams, widgets, and templates.
 - Schedule playlists by day, time window, display, or group.
 - Assign displays to groups and bulk-deploy content.
-- Rotate displays between landscape and portrait orientation.
+- Rotate displays between landscape, flipped landscape, portrait-right, and portrait-left.
+- Schedule the fixed `TV_OFF` system playlist to turn displays off cleanly.
 - Monitor player health, heartbeats, screenshots, system stats, and playback status.
 - Register players by direct server URL or setup/pairing flow.
 - Push SignIT player software updates to Raspberry Pis from the server.
@@ -317,7 +318,7 @@ Build the image from the project:
 ./tools/build-image.sh
 ```
 
-Flash the generated `dist/signit-v12.img` image to an SD card with Raspberry Pi Imager.
+Flash the generated `dist/signit-v1.img` image to an SD card with Raspberry Pi Imager.
 
 Important note: Raspberry Pi Imager does not show the normal WiFi/user customization wizard when flashing a custom image. That is expected.
 
@@ -388,6 +389,36 @@ After a Pi is on the updater-capable player, use:
 Dashboard -> Devices -> Update outdated players
 Dashboard -> Devices -> open a display -> Player Software -> Update Player
 ```
+
+---
+
+## Display Power And Rotation
+
+SignIT includes a fixed system playlist named `TV_OFF`.
+
+Use it anywhere a normal playlist can be used:
+
+```text
+Dashboard -> Schedules -> New Schedule -> Playlist -> TV_OFF
+Dashboard -> Devices -> Assigned Playlist -> TV_OFF
+```
+
+When `TV_OFF` becomes active, the Pi switches the connected display off using the best available Raspberry Pi/X11 method. When a normal playlist becomes active again, the Pi powers the display back on before showing content.
+
+Display rotation supports:
+
+- `Landscape`
+- `Landscape Flipped`
+- `Portrait Right`
+- `Portrait Left`
+
+Use:
+
+```text
+Dashboard -> Devices -> open display -> Display Orientation
+```
+
+This is intentionally more flexible than a simple portrait toggle because real installs are not always mounted the same direction.
 
 ---
 

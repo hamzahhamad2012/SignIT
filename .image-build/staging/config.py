@@ -14,6 +14,7 @@ DEFAULT_CONFIG = {
     'screenshot_interval': 300,
     'resolution': '1920x1080',
     'orientation': 'landscape',
+    'display_rotation': 'landscape',
     'hdmi_mode': 'auto',
     'overscan': False,
     'audio_output': 'hdmi',
@@ -49,7 +50,7 @@ def ensure_dirs():
 
 PERSIST_KEYS = {
     'server_url', 'device_id', 'device_name', 'configured',
-    'resolution', 'orientation', 'hdmi_mode', 'overscan',
+    'resolution', 'orientation', 'display_rotation', 'hdmi_mode', 'overscan',
     'audio_output', 'volume',
 }
 

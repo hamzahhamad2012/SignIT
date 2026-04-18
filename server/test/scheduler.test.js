@@ -327,7 +327,7 @@ test('core API smoke test covers auth, content, devices, schedules, and player r
 
   const playerManifest = await request('/api/setup/player-manifest');
   assert.equal(playerManifest.ok, true);
-  assert.equal(playerManifest.data.version, '1.2.0');
+  assert.equal(playerManifest.data.version, '1.3.0');
   assert.ok(playerManifest.data.files.includes('player.py'));
 
   const login = await request('/api/auth/login', {
@@ -367,6 +367,8 @@ test('core API smoke test covers auth, content, devices, schedules, and player r
   assert.equal(templates.ok, true);
   assert.equal(assetsList.ok, true);
   assert.equal(playlistsList.ok, true);
+  const tvOffPlaylist = playlistsList.data.playlists.find((playlist) => playlist.name === 'TV_OFF' && playlist.is_system);
+  assert.ok(tvOffPlaylist);
   assert.equal(schedulesList.ok, true);
   assert.equal(dashboard.ok, true);
 
@@ -479,22 +481,38 @@ test('core API smoke test covers auth, content, devices, schedules, and player r
 
   const deviceId = deviceRegistration.data.device_id;
 
+  const assignTvOff = await request(`/api/devices/${deviceId}`, {
+    method: 'PUT',
+    headers: authHeaders,
+    body: JSON.stringify({ assigned_playlist_id: tvOffPlaylist.id }),
+  });
+  assert.equal(assignTvOff.ok, true);
+
+  const playerTvOff = await request('/api/player/playlist', {
+    headers: { 'X-Device-Id': deviceId },
+  });
+  assert.equal(playerTvOff.ok, true);
+  assert.equal(playerTvOff.data.playlist.name, 'TV_OFF');
+  assert.equal(playerTvOff.data.playlist.system_action, 'display_off');
+  assert.deepEqual(playerTvOff.data.playlist.items, []);
+
   const updateDevice = await request(`/api/devices/${deviceId}`, {
     method: 'PUT',
     headers: authHeaders,
     body: JSON.stringify({
       assigned_playlist_id: fallbackPlaylist.data.playlist.id,
-      orientation: 'portrait',
+      display_rotation: 'portrait-left',
     }),
   });
   assert.equal(updateDevice.ok, true);
   assert.equal(updateDevice.data.device.orientation, 'portrait');
+  assert.equal(updateDevice.data.device.display_rotation, 'portrait-left');
 
   const deviceDetail = await request(`/api/devices/${deviceId}`, {
     headers: { Authorization: authHeaders.Authorization },
   });
   assert.equal(deviceDetail.ok, true);
-  assert.equal(deviceDetail.data.device.latest_player_version, '1.2.0');
+  assert.equal(deviceDetail.data.device.latest_player_version, '1.3.0');
   assert.equal(deviceDetail.data.device.needs_player_update, true);
 
   const updatePlayers = await request('/api/devices/update-player', {
@@ -503,7 +521,7 @@ test('core API smoke test covers auth, content, devices, schedules, and player r
     body: JSON.stringify({ device_ids: [deviceId] }),
   });
   assert.equal(updatePlayers.ok, true);
-  assert.equal(updatePlayers.data.latest_player_version, '1.2.0');
+  assert.equal(updatePlayers.data.latest_player_version, '1.3.0');
   assert.equal(updatePlayers.data.sent.length, 0);
   assert.equal(updatePlayers.data.queued.length, 1);
   assert.equal(updatePlayers.data.queued[0].id, deviceId);
@@ -513,6 +531,7 @@ test('core API smoke test covers auth, content, devices, schedules, and player r
   });
   assert.equal(playerConfig.ok, true);
   assert.equal(playerConfig.data.orientation, 'portrait');
+  assert.equal(playerConfig.data.display_rotation, 'portrait-left');
 
   const playerFallback = await request('/api/player/playlist', {
     headers: { 'X-Device-Id': deviceId },
@@ -534,6 +553,49 @@ test('core API smoke test covers auth, content, devices, schedules, and player r
     }),
   });
   assert.equal(schedule.ok, true, `Schedule creation failed: ${JSON.stringify(schedule.data)}\n${serverLogs}`);
+
+  const savedSchedule = await request(`/api/schedules/${schedule.data.schedule.id}`, {
+    headers: { Authorization: authHeaders.Authorization },
+  });
+  assert.equal(savedSchedule.ok, true);
+  assert.equal(savedSchedule.data.schedule.playlist_id, scheduledPlaylist.data.playlist.id);
+  assert.equal(savedSchedule.data.schedule.device_id, deviceId);
+  assert.equal(savedSchedule.data.schedule.days_of_week, String(todayIndex));
+
+  const scheduleUpdate = await request(`/api/schedules/${schedule.data.schedule.id}`, {
+    method: 'PUT',
+    headers: authHeaders,
+    body: JSON.stringify({
+      name: 'Priority Override Updated',
+      playlist_id: scheduledPlaylist.data.playlist.id,
+      device_id: deviceId,
+      group_id: null,
+      priority: '75',
+      start_time: '23:00',
+      end_time: '10:00',
+      start_date: '',
+      end_date: '',
+      days_of_week: String(todayIndex),
+      is_active: true,
+    }),
+  });
+  assert.equal(scheduleUpdate.ok, true, `Schedule update failed: ${JSON.stringify(scheduleUpdate.data)}`);
+  assert.equal(scheduleUpdate.data.schedule.name, 'Priority Override Updated');
+  assert.equal(scheduleUpdate.data.schedule.priority, 75);
+  assert.equal(scheduleUpdate.data.schedule.start_time, '23:00');
+  assert.equal(scheduleUpdate.data.schedule.end_time, '10:00');
+  assert.equal(scheduleUpdate.data.schedule.start_date, null);
+
+  const scheduleReactivateAllDay = await request(`/api/schedules/${schedule.data.schedule.id}`, {
+    method: 'PUT',
+    headers: authHeaders,
+    body: JSON.stringify({
+      start_time: null,
+      end_time: null,
+      priority: 50,
+    }),
+  });
+  assert.equal(scheduleReactivateAllDay.ok, true);
 
   const heartbeatBeforeSwitch = await request('/api/player/heartbeat', {
     method: 'POST',

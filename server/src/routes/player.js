@@ -4,6 +4,7 @@ import { join } from 'path';
 import db from '../db/index.js';
 import { getActivePlaylistForDevice, getPlaylistContent } from '../services/scheduler.js';
 import { UPLOAD_DIR } from '../config/paths.js';
+import { getDeviceDisplayRotation } from '../services/displayRotation.js';
 
 const router = Router();
 
@@ -94,11 +95,14 @@ router.get('/config', (req, res) => {
 
   const device = db.prepare('SELECT * FROM devices WHERE id = ?').get(deviceId);
   if (!device) return res.status(404).json({ error: 'Device not registered' });
+  const rotation = getDeviceDisplayRotation(device);
 
   res.json({
     device_id: device.id,
     name: device.name,
     orientation: device.orientation,
+    display_rotation: rotation.value,
+    display_rotation_degrees: rotation.degrees,
     resolution: device.resolution,
     settings: JSON.parse(device.settings || '{}'),
   });
