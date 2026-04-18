@@ -186,104 +186,128 @@ Full AWS notes live in:
 
 ## Deploying Updates To The AWS Server
 
-Use this section when code was changed locally, pushed to GitHub, and the AWS server needs to pull the latest version.
+Use this section when code was changed locally, pushed to GitHub, and the AWS server needs to pull the latest version. The normal path is now one script on the AWS server.
 
-### Part 1 - Push Code From Your Mac
+### Part 1 - Push Code From Your Mac First
 
 From the project folder on your Mac:
 
 ```bash
 git status
-git add README.md
-git commit -m "Update README"
+git add .
+git commit -m "Describe what changed"
 git push origin main
 ```
 
-For normal feature work, stage the files you changed instead of only `README.md`.
+If there is nothing to commit, just run:
 
-### Part 2 - Connect To AWS
+```bash
+git push origin main
+```
 
-Use AWS Session Manager or SSH to connect to the EC2 instance.
+### Part 2 - Run The Server Deploy Script
 
-If you land as `ssm-user`, fix ownership and switch to the `ubuntu` user:
+Connect to the EC2 instance with AWS Session Manager or SSH. Then run this as whichever sudo-capable user you land in, often `ssm-user`:
+
+```bash
+sudo env SIGNIT_PUBLIC_URL=http://YOUR_ELASTIC_IP /opt/signit/app/tools/deploy-server.sh
+```
+
+For the current production server:
+
+```bash
+sudo env SIGNIT_PUBLIC_URL=http://13.59.83.131 /opt/signit/app/tools/deploy-server.sh
+```
+
+The script does all of this for you:
+
+- fixes common ownership problems under `/opt/signit/app`
+- runs Git and npm as the `ubuntu` user
+- refuses to deploy if the server worktree has local uncommitted changes
+- fetches and fast-forwards `origin/main`
+- installs root, server, and web dependencies
+- builds the dashboard
+- restarts the `signit` systemd service
+- verifies `/api/health`
+- verifies `/api/setup/player-manifest` so Pi updates are confirmed
+- prints the deployed Git commit
+
+This is the command to use 99% of the time. It prevents the painful copy/paste failure mode where part of the deploy happens as `ssm-user`, part happens as `ubuntu`, and the service never actually restarts.
+
+### One-Time Bootstrap For Older Servers
+
+If the server does not have `tools/deploy-server.sh` yet, pull the latest code manually one last time:
 
 ```bash
 sudo chown -R ubuntu:ubuntu /opt/signit/app /var/lib/signit /etc/signit
 sudo mkdir -p /home/ubuntu/.npm
 sudo chown -R ubuntu:ubuntu /home/ubuntu/.npm
 sudo -iu ubuntu
-```
-
-Your prompt should look similar to:
-
-```text
-ubuntu@ip-172-31-33-208:~$
-```
-
-### Part 3 - Pull Latest GitHub Code
-
-Run these as the `ubuntu` user:
-
-```bash
 cd /opt/signit/app
-git log --oneline -1
 git fetch origin main
 git merge --ff-only origin/main
-git log --oneline -1
-```
-
-The final `git log --oneline -1` should show the newest commit you pushed.
-
-If `git merge --ff-only origin/main` fails, stop and inspect the error. Do not run random follow-up commands until the Git state is clear.
-
-### Part 4 - Install And Build
-
-If the update changed only docs, this step can be skipped. If the update changed server, web, player, package files, or you are not sure, run it.
-
-Still as the `ubuntu` user:
-
-```bash
-npm install
-cd server && npm install && cd ..
-cd web && npm install && cd ..
-npm run build
 exit
 ```
 
-After `exit`, you should be back to your original AWS Session Manager user, often `ssm-user`.
-
-### Part 5 - Restart SignIT
-
-Run:
+Then use the deploy script:
 
 ```bash
-sudo systemctl restart signit
-sleep 5
-sudo systemctl status signit --no-pager -l
+sudo env SIGNIT_PUBLIC_URL=http://YOUR_ELASTIC_IP /opt/signit/app/tools/deploy-server.sh
 ```
 
-The service should show:
+### What Success Looks Like
+
+The script should show:
 
 ```text
 Active: active (running)
 ```
 
-### Part 6 - Health Check
-
-Check both local app access and public IP access:
-
-```bash
-curl -i --max-time 5 http://127.0.0.1:4000/api/health
-curl -i --max-time 5 http://YOUR_ELASTIC_IP/api/health
-```
-
-Expected result:
+It should also show JSON for the player manifest:
 
 ```json
-{"status":"ok","version":"1.0.0","uptime":123,"scheduler":{"timezone":"America/Chicago"}}
+{"version":"1.4.0","files":["player.py","config.py","setup_server.py","setup_tui.py","requirements.txt","setup_ui/index.html"]}
 ```
 
-### Part 7 - If It Fails
+The exact version changes over time. The important part is that it is JSON and includes `player.py`. If this returns HTML, the server is not serving the API route correctly.
+
+After a successful deploy, hard refresh the browser:
+
+```text
+Command + Shift + R
+```
+
+### Manual Fallback
+
+Use this only if the deploy script itself is missing or broken.
+
+```bash
+sudo chown -R ubuntu:ubuntu /opt/signit/app /var/lib/signit /etc/signit
+sudo mkdir -p /home/ubuntu/.npm
+sudo chown -R ubuntu:ubuntu /home/ubuntu/.npm
+sudo -iu ubuntu
+cd /opt/signit/app
+git log --oneline -1
+git fetch origin main
+git merge --ff-only origin/main
+git log --oneline -1
+npm install
+cd server && npm install && cd ..
+cd web && npm install && cd ..
+npm run build
+exit
+sudo systemctl restart signit
+sleep 5
+sudo systemctl status signit --no-pager -l
+curl -i --max-time 5 http://127.0.0.1:4000/api/health
+curl -i --max-time 5 http://YOUR_ELASTIC_IP/api/health
+curl -i --max-time 5 http://127.0.0.1:4000/api/setup/player-manifest
+curl -i --max-time 5 http://YOUR_ELASTIC_IP/api/setup/player-manifest
+```
+
+If `git merge --ff-only origin/main` fails, stop and inspect the error. Do not run random follow-up commands until the Git state is clear.
+
+### If It Fails
 
 If the browser shows `502 Bad Gateway`, Nginx is alive but the Node app is not running.
 
@@ -304,6 +328,8 @@ Common deploy problems:
 - `Permission denied` during `git pull` or `npm install`: fix ownership and run Git/npm as `ubuntu`.
 - Browser shows `502 Bad Gateway`: restart failed; check `journalctl`.
 - Terminal prompt changes to `>`: an unmatched quote was pasted; press `Ctrl+C` and retry in smaller parts.
+- Browser still shows old UI after deploy: hard refresh with `Command + Shift + R`, or open an incognito window.
+- `Latest Player` shows `unknown`: check `http://YOUR_ELASTIC_IP/api/setup/player-manifest`; it must return JSON with a `version`.
 - Public health check fails but local health check works: check Nginx and the AWS security group.
 
 ---
