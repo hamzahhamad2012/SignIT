@@ -223,7 +223,8 @@ The script does all of this for you:
 
 - fixes common ownership problems under `/opt/signit/app`
 - runs Git and npm as the `ubuntu` user
-- refuses to deploy if the server worktree has local uncommitted changes
+- restores harmless npm lockfile noise if production installs dirtied `package-lock.json`
+- refuses to deploy if the server worktree has real non-lockfile local changes
 - fetches and fast-forwards `origin/main`
 - installs root, server, and web dependencies
 - builds the dashboard
@@ -326,6 +327,7 @@ journalctl -u signit -n 120 --no-pager
 Common deploy problems:
 
 - `Permission denied` during `git pull` or `npm install`: fix ownership and run Git/npm as `ubuntu`.
+- `Server worktree has non-lockfile local changes`: the script found real source edits on the server. Run `sudo -iu ubuntu`, `cd /opt/signit/app`, and `git status --short` to inspect before changing anything.
 - Browser shows `502 Bad Gateway`: restart failed; check `journalctl`.
 - Terminal prompt changes to `>`: an unmatched quote was pasted; press `Ctrl+C` and retry in smaller parts.
 - Browser still shows old UI after deploy: hard refresh with `Command + Shift + R`, or open an incognito window.

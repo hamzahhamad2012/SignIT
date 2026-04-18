@@ -35,6 +35,16 @@ curl_json() {
   printf '%s\n%s\n' "$label:" "$body"
 }
 
+clean_lockfile_noise() {
+  local lock_status
+
+  lock_status="$(run_as_ubuntu "cd '$APP_DIR' && git status --short -- package-lock.json server/package-lock.json web/package-lock.json")"
+  if [ -n "$lock_status" ]; then
+    printf 'Restoring generated npm lockfile noise:\n%s\n' "$lock_status"
+    run_as_ubuntu "cd '$APP_DIR' && git restore -- package-lock.json server/package-lock.json web/package-lock.json"
+  fi
+}
+
 require_app_dir
 
 step "Preparing permissions"
@@ -42,11 +52,14 @@ sudo chown -R ubuntu:ubuntu "$APP_DIR" /var/lib/signit /etc/signit
 sudo mkdir -p /home/ubuntu/.npm
 sudo chown -R ubuntu:ubuntu /home/ubuntu/.npm
 
+step "Cleaning generated lockfile noise"
+clean_lockfile_noise
+
 step "Checking server worktree"
 dirty="$(run_as_ubuntu "cd '$APP_DIR' && git status --short")"
 if [ -n "$dirty" ]; then
   printf '%s\n' "$dirty"
-  die "Server worktree has local changes. Commit, stash, or inspect them before deploying."
+  die "Server worktree has non-lockfile local changes. Commit, stash, or inspect them before deploying."
 fi
 
 before_commit="$(run_as_ubuntu "cd '$APP_DIR' && git log --oneline -1")"
@@ -60,6 +73,9 @@ printf 'Deployed server commit: %s\n' "$after_commit"
 
 step "Installing dependencies and building dashboard"
 run_as_ubuntu "cd '$APP_DIR' && npm install && cd server && npm install && cd ../web && npm install && cd .. && npm run build"
+
+step "Cleaning post-build lockfile noise"
+clean_lockfile_noise
 
 step "Restarting SignIT"
 sudo systemctl restart "$SERVICE"
