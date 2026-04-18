@@ -66,6 +66,20 @@ function applyMigrations() {
     db.prepare("ALTER TABLE activity_log ADD COLUMN category TEXT DEFAULT 'system'").run();
   }
 
+  db.prepare(`
+    CREATE TABLE IF NOT EXISTS player_update_jobs (
+      device_id TEXT PRIMARY KEY REFERENCES devices(id) ON DELETE CASCADE,
+      target_version TEXT NOT NULL,
+      force BOOLEAN DEFAULT 0,
+      status TEXT DEFAULT 'queued' CHECK(status IN ('queued','sent','checking','downloading','installing','success','failed','current')),
+      requested_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+      requested_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      sent_at DATETIME,
+      completed_at DATETIME,
+      last_error TEXT
+    )
+  `).run();
+
   db.prepare('CREATE INDEX IF NOT EXISTS idx_users_status ON users(status)').run();
   db.prepare('CREATE INDEX IF NOT EXISTS idx_user_device_permissions_user ON user_device_permissions(user_id)').run();
   db.prepare('CREATE INDEX IF NOT EXISTS idx_user_device_permissions_device ON user_device_permissions(device_id)').run();
@@ -74,6 +88,7 @@ function applyMigrations() {
   db.prepare('CREATE INDEX IF NOT EXISTS idx_widgets_asset ON widgets(asset_id)').run();
   db.prepare('CREATE INDEX IF NOT EXISTS idx_activity_log_user ON activity_log(user_id)').run();
   db.prepare('CREATE INDEX IF NOT EXISTS idx_activity_log_category ON activity_log(category)').run();
+  db.prepare('CREATE INDEX IF NOT EXISTS idx_player_update_jobs_status ON player_update_jobs(status)').run();
 
   db.prepare("UPDATE users SET status = 'active' WHERE status IS NULL OR status = ''").run();
   const uncategorized = db.prepare(`

@@ -5,17 +5,34 @@ import { authenticateToken, requireManagementAccess } from '../middleware/auth.j
 import { refreshDevices } from '../services/schedulerRuntime.js';
 import { buildDeviceAccessClause, userCanAccessDevice } from '../services/userAccess.js';
 import { logActivity } from '../services/activityLog.js';
+import { getLatestPlayerVersion, isPlayerOutdated } from '../services/playerVersion.js';
+import { queuePlayerUpdate, sendQueuedPlayerUpdate } from '../services/playerUpdates.js';
 
 const router = Router();
+
+function annotatePlayerVersion(device, latestVersion = getLatestPlayerVersion()) {
+  device.latest_player_version = latestVersion;
+  device.needs_player_update = isPlayerOutdated(device.player_version, latestVersion);
+  return device;
+}
+
+function hasLiveDeviceSocket(io, deviceId) {
+  const room = io.sockets.adapter.rooms.get(`device:${deviceId}`);
+  return Boolean(room && room.size > 0);
+}
 
 router.get('/', authenticateToken, (req, res) => {
   const { group_id, status, search } = req.query;
   const access = buildDeviceAccessClause(req.user, 'd');
   let query = `
-    SELECT d.*, g.name as group_name, p.name as playlist_name
+    SELECT d.*, g.name as group_name, p.name as playlist_name,
+      pu.status as player_update_status,
+      pu.target_version as player_update_target_version,
+      pu.last_error as player_update_error
     FROM devices d
     LEFT JOIN groups g ON g.id = d.group_id
     LEFT JOIN playlists p ON p.id = d.current_playlist_id
+    LEFT JOIN player_update_jobs pu ON pu.device_id = d.id
     WHERE ${access.sql}
   `;
   const params = [...access.params];
@@ -30,6 +47,7 @@ router.get('/', authenticateToken, (req, res) => {
   devices.forEach(d => {
     d.settings = JSON.parse(d.settings || '{}');
     d.tags = JSON.parse(d.tags || '[]');
+    annotatePlayerVersion(d);
   });
 
   res.json({ devices });
@@ -45,22 +63,98 @@ router.get('/stats', authenticateToken, (req, res) => {
   res.json({ total, online, offline, error: errored });
 });
 
+router.get('/player/latest', authenticateToken, requireManagementAccess, (req, res) => {
+  res.json({ version: getLatestPlayerVersion() });
+});
+
+router.post('/update-player', authenticateToken, requireManagementAccess, (req, res) => {
+  const latestVersion = getLatestPlayerVersion();
+  const { device_ids, only_outdated = true, force = false } = req.body || {};
+  const requestedIds = Array.isArray(device_ids)
+    ? [...new Set(device_ids.map((id) => String(id)).filter(Boolean))]
+    : [];
+  const access = buildDeviceAccessClause(req.user, 'd');
+
+  let query = `SELECT d.id, d.name, d.status, d.player_version FROM devices d WHERE ${access.sql}`;
+  const params = [...access.params];
+  if (requestedIds.length > 0) {
+    query += ` AND d.id IN (${requestedIds.map(() => '?').join(',')})`;
+    params.push(...requestedIds);
+  }
+
+  const devices = db.prepare(query).all(...params);
+  const io = req.app.get('io');
+  const sent = [];
+  const queued = [];
+  const skipped = [];
+
+  devices.forEach((device) => {
+    const needsUpdate = isPlayerOutdated(device.player_version, latestVersion);
+    if (only_outdated && !needsUpdate && !force) {
+      skipped.push({ id: device.id, name: device.name, reason: 'already_current', player_version: device.player_version });
+      return;
+    }
+
+    queuePlayerUpdate(db, {
+      deviceId: device.id,
+      targetVersion: latestVersion,
+      force,
+      requestedBy: req.user.id,
+    });
+
+    if (!hasLiveDeviceSocket(io, device.id)) {
+      queued.push({ id: device.id, name: device.name, player_version: device.player_version, latest_player_version: latestVersion });
+      return;
+    }
+
+    if (sendQueuedPlayerUpdate(io, db, device.id)) {
+      sent.push({ id: device.id, name: device.name, player_version: device.player_version, latest_player_version: latestVersion });
+    }
+  });
+
+  logActivity(db, {
+    userId: req.user.id,
+    action: 'player_update_requested',
+    details: {
+      latest_player_version: latestVersion,
+      requested_count: requestedIds.length || devices.length,
+      sent_count: sent.length,
+      queued_count: queued.length,
+      skipped_count: skipped.length,
+      force: Boolean(force),
+    },
+  });
+
+  res.json({
+    success: true,
+    latest_player_version: latestVersion,
+    sent,
+    queued,
+    skipped,
+  });
+});
+
 router.get('/:id', authenticateToken, (req, res) => {
   if (!userCanAccessDevice(req.user, req.params.id)) {
     return res.status(404).json({ error: 'Device not found' });
   }
 
   const device = db.prepare(`
-    SELECT d.*, g.name as group_name, p.name as playlist_name
+    SELECT d.*, g.name as group_name, p.name as playlist_name,
+      pu.status as player_update_status,
+      pu.target_version as player_update_target_version,
+      pu.last_error as player_update_error
     FROM devices d
     LEFT JOIN groups g ON g.id = d.group_id
     LEFT JOIN playlists p ON p.id = d.current_playlist_id
+    LEFT JOIN player_update_jobs pu ON pu.device_id = d.id
     WHERE d.id = ?
   `).get(req.params.id);
 
   if (!device) return res.status(404).json({ error: 'Device not found' });
   device.settings = JSON.parse(device.settings || '{}');
   device.tags = JSON.parse(device.tags || '[]');
+  annotatePlayerVersion(device);
   res.json({ device });
 });
 
@@ -224,17 +318,51 @@ router.delete('/:id', authenticateToken, requireManagementAccess, (req, res) => 
 
 router.post('/:id/command', authenticateToken, requireManagementAccess, (req, res) => {
   const { command, params: cmdParams } = req.body;
+  if (!userCanAccessDevice(req.user, req.params.id)) {
+    return res.status(404).json({ error: 'Device not found' });
+  }
+
   const device = db.prepare('SELECT * FROM devices WHERE id = ?').get(req.params.id);
   if (!device) return res.status(404).json({ error: 'Device not found' });
 
   const io = req.app.get('io');
-  io.to(`device:${req.params.id}`).emit('command', { command, params: cmdParams });
+  const params = command === 'update_player'
+    ? { version: getLatestPlayerVersion(), ...(cmdParams || {}) }
+    : cmdParams;
+
+  if (command === 'update_player') {
+    queuePlayerUpdate(db, {
+      deviceId: req.params.id,
+      targetVersion: params.version,
+      force: Boolean(params.force),
+      requestedBy: req.user.id,
+    });
+
+    const sent = hasLiveDeviceSocket(io, req.params.id)
+      ? sendQueuedPlayerUpdate(io, db, req.params.id)
+      : false;
+
+    logActivity(db, {
+      userId: req.user.id,
+      deviceId: req.params.id,
+      action: 'player_update_requested',
+      details: { command, params, queued: !sent },
+    });
+
+    return res.json({
+      success: true,
+      queued: !sent,
+      message: sent ? 'Player update command sent' : 'Player update queued until the Pi reconnects',
+    });
+  }
+
+  io.to(`device:${req.params.id}`).emit('command', { command, params });
 
   logActivity(db, {
     userId: req.user.id,
     deviceId: req.params.id,
     action: 'command_sent',
-    details: { command, params: cmdParams },
+    details: { command, params },
   });
 
   res.json({ success: true, message: `Command "${command}" sent` });

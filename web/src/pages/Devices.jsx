@@ -6,9 +6,10 @@ import { useAuth } from '../context/AuthContext';
 import StatusBadge from '../components/StatusBadge';
 import EmptyState from '../components/EmptyState';
 import AddDisplayWizard from '../components/AddDisplayWizard';
+import toast from 'react-hot-toast';
 import {
   Monitor, Search, Filter, Thermometer, Cpu,
-  MemoryStick, Clock, Wifi, RefreshCw, Plus, MapPin, RotateCw,
+  MemoryStick, Clock, Wifi, RefreshCw, Plus, MapPin, RotateCw, Download, Loader2,
 } from 'lucide-react';
 
 function timeAgo(dateStr) {
@@ -22,6 +23,10 @@ function timeAgo(dateStr) {
   return `${Math.floor(hrs / 24)}d ago`;
 }
 
+function activePlayerUpdateStatus(status) {
+  return status && !['success', 'current'].includes(status);
+}
+
 export default function Devices() {
   const { user } = useAuth();
   const [devices, setDevices] = useState([]);
@@ -29,6 +34,7 @@ export default function Devices() {
   const [search, setSearch] = useState('');
   const [filterStatus, setFilterStatus] = useState('');
   const [wizardOpen, setWizardOpen] = useState(false);
+  const [updatePending, setUpdatePending] = useState(false);
   const { on } = useSocket();
   const canManage = ['admin', 'editor'].includes(user?.role);
 
@@ -47,6 +53,28 @@ export default function Devices() {
     return () => { unsub1(); unsub2(); };
   }, [on]);
 
+  const outdatedCount = devices.filter((device) => device.needs_player_update).length;
+
+  const updateOutdatedPlayers = async () => {
+    setUpdatePending(true);
+    try {
+      const result = await api.post('/devices/update-player', { only_outdated: true });
+      if (result.sent.length > 0 || result.queued.length > 0) {
+        const parts = [];
+        if (result.sent.length > 0) parts.push(`${result.sent.length} sent now`);
+        if (result.queued.length > 0) parts.push(`${result.queued.length} queued`);
+        toast.success(`Player updates: ${parts.join(', ')}`);
+      } else {
+        toast('No outdated displays needed an update');
+      }
+      fetchDevices();
+    } catch (err) {
+      toast.error(err.message || 'Could not send player updates');
+    } finally {
+      setUpdatePending(false);
+    }
+  };
+
   return (
     <div className="space-y-5">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
@@ -55,6 +83,12 @@ export default function Devices() {
           <p className="text-sm text-zinc-500 mt-0.5">{devices.length} registered display{devices.length !== 1 && 's'}</p>
         </div>
         <div className="flex gap-2">
+          {canManage && outdatedCount > 0 && (
+            <button onClick={updateOutdatedPlayers} disabled={updatePending} className="btn-secondary">
+              {updatePending ? <Loader2 size={15} className="animate-spin" /> : <Download size={15} />}
+              Update {outdatedCount}
+            </button>
+          )}
           <button onClick={fetchDevices} className="btn-secondary">
             <RefreshCw size={15} /> Refresh
           </button>
@@ -123,6 +157,18 @@ export default function Devices() {
                 </div>
                 <StatusBadge status={device.status} />
               </div>
+
+              {device.needs_player_update && (
+                <div className="mb-3 rounded-lg border border-amber-500/20 bg-amber-500/10 px-2.5 py-1.5 text-xs text-amber-300">
+                  Player update available: {device.player_version || 'unknown'} {'->'} {device.latest_player_version || 'latest'}
+                </div>
+              )}
+              {activePlayerUpdateStatus(device.player_update_status) && (
+                <div className="mb-3 rounded-lg border border-sky-500/20 bg-sky-500/10 px-2.5 py-1.5 text-xs text-sky-300">
+                  Player update {device.player_update_status}
+                  {device.player_update_target_version ? ` to ${device.player_update_target_version}` : ''}
+                </div>
+              )}
 
               <div className="grid grid-cols-2 gap-2 mt-auto">
                 {device.cpu_temp != null && (

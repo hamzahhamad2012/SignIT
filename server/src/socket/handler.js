@@ -1,5 +1,6 @@
 import db from '../db/index.js';
 import { logActivity } from '../services/activityLog.js';
+import { sendQueuedPlayerUpdate, updatePlayerJobStatus } from '../services/playerUpdates.js';
 
 // Track pending offline timers — don't mark offline instantly on socket disconnect
 const offlineTimers = new Map();
@@ -22,6 +23,7 @@ export function setupSocketHandlers(io) {
       db.prepare("UPDATE devices SET status = 'online', last_seen = CURRENT_TIMESTAMP WHERE id = ?")
         .run(deviceId);
       io.emit('device:status', { deviceId, status: 'online' });
+      sendQueuedPlayerUpdate(io, db, deviceId);
 
       socket.on('heartbeat', (data) => {
         const { cpu_temp, cpu_usage, memory_usage, disk_usage, uptime } = data;
@@ -40,6 +42,7 @@ export function setupSocketHandlers(io) {
       });
 
       socket.on('player:status', (data) => {
+        updatePlayerJobStatus(db, deviceId, data);
         io.emit('device:player_status', { deviceId, ...data });
       });
 

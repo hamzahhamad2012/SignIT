@@ -29,6 +29,7 @@ Core capabilities:
 - Rotate displays between landscape and portrait orientation.
 - Monitor player health, heartbeats, screenshots, system stats, and playback status.
 - Register players by direct server URL or setup/pairing flow.
+- Push SignIT player software updates to Raspberry Pis from the server.
 - Manage users, approvals, roles, and display-level access.
 - Review compact user activity logs for logins and dashboard changes.
 - Keep audit activity automatically trimmed to 90 days.
@@ -316,7 +317,7 @@ Build the image from the project:
 ./tools/build-image.sh
 ```
 
-Flash the generated image to an SD card with Raspberry Pi Imager.
+Flash the generated `dist/signit-v12.img` image to an SD card with Raspberry Pi Imager.
 
 Important note: Raspberry Pi Imager does not show the normal WiFi/user customization wizard when flashing a custom image. That is expected.
 
@@ -349,6 +350,44 @@ http://203.0.113.10
 ```
 
 The player should register, appear in the dashboard, and begin receiving assigned playlists or schedules.
+
+---
+
+## Raspberry Pi Player Updates
+
+SignIT supports server-triggered player updates for Pis running the newer player updater.
+
+How it works:
+
+- The server reads the latest Pi player version from `player/player.py`.
+- The dashboard marks displays as needing an update when their reported `player_version` is older.
+- Admins and editors can update one Pi from the display detail page.
+- Admins and editors can update all outdated Pis from the Displays page.
+- Online Pis receive the update command immediately.
+- Offline Pis are queued and receive the update the next time they reconnect.
+
+Important bootstrap note:
+
+Existing Pis that were flashed or installed before the OTA updater existed cannot understand the `update_player` command yet. Those Pis need one manual update first, either by reflashing the latest SignIT OS image or running the latest installer on the Pi. After that first upgrade, future player updates can be pushed from the server.
+
+For a new player OS build:
+
+```bash
+./tools/build-image.sh
+```
+
+For an existing Pi that needs the one-time updater bootstrap:
+
+```bash
+sudo bash <(curl -sSL http://YOUR_ELASTIC_IP/api/setup/install.sh)
+```
+
+After a Pi is on the updater-capable player, use:
+
+```text
+Dashboard -> Devices -> Update outdated players
+Dashboard -> Devices -> open a display -> Player Software -> Update Player
+```
 
 ---
 

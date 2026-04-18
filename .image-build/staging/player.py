@@ -15,6 +15,7 @@ import subprocess
 import threading
 import http.server
 import functools
+import shutil
 from pathlib import Path
 from datetime import datetime
 
@@ -25,7 +26,15 @@ import psutil
 from config import load_config, save_config, CACHE_DIR, LOG_DIR
 
 CONTENT_SERVER_PORT = 8889
-PLAYER_VERSION = '1.1.0'
+PLAYER_VERSION = '1.2.0'
+UPDATE_FILES = {
+    'player.py',
+    'config.py',
+    'setup_server.py',
+    'setup_tui.py',
+    'requirements.txt',
+    'setup_ui/index.html',
+}
 
 logging.basicConfig(
     level=logging.INFO,
@@ -46,6 +55,7 @@ class SignITPlayer:
         self.current_playlist = None
         self.chromium_proc = None
         self.rotation_fallback = False
+        self.update_in_progress = False
         self.sio = socketio.Client(reconnection=True, reconnection_delay=5)
         self._setup_socket()
 
@@ -61,6 +71,7 @@ class SignITPlayer:
         @self.sio.on('command')
         def on_command(data):
             cmd = data.get('command')
+            params = data.get('params') or {}
             log.info(f'Received command: {cmd}')
             if cmd == 'reboot':
                 self._reboot()
@@ -73,6 +84,8 @@ class SignITPlayer:
             elif cmd == 'refresh_config':
                 self._refresh_device_config(force_restart=True)
                 self._refresh_content()
+            elif cmd == 'update_player':
+                threading.Thread(target=self._update_player, args=(params,), daemon=True).start()
 
         @self.sio.on('playlist:deploy')
         def on_playlist_deploy(data):
@@ -673,6 +686,104 @@ html,body{{width:100%;height:100%;overflow:hidden;background:{bg_color}}}
         """Restart the player process."""
         log.info('Restarting player...')
         os.execv(sys.executable, [sys.executable] + sys.argv)
+
+    def _emit_player_status(self, **payload):
+        if self.sio.connected:
+            self.sio.emit('player:status', payload)
+
+    def _download_update_file(self, relative_path, update_dir):
+        if relative_path not in UPDATE_FILES or '..' in relative_path:
+            raise RuntimeError(f'Unsafe update file path: {relative_path}')
+
+        url = f'{self.server_url}/api/setup/player-file/{relative_path}'
+        target = os.path.join(update_dir, relative_path)
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+
+        response = requests.get(url, timeout=60)
+        response.raise_for_status()
+        with open(target, 'wb') as f:
+            f.write(response.content)
+        return target
+
+    def _update_player(self, params=None):
+        """Download the latest player files from the SignIT server and restart."""
+        if self.update_in_progress:
+            log.info('Player update already in progress')
+            return
+
+        params = params or {}
+        force = bool(params.get('force'))
+        self.update_in_progress = True
+        update_dir = '/opt/signit/.update'
+
+        try:
+            self._emit_player_status(update_status='checking', player_version=PLAYER_VERSION)
+            manifest = self._api_get('/api/setup/player-manifest')
+            latest_version = manifest.get('version') or params.get('version') or 'unknown'
+            files = manifest.get('files') or sorted(UPDATE_FILES)
+            files = [path for path in files if path in UPDATE_FILES]
+
+            if not force and latest_version != 'unknown' and latest_version == PLAYER_VERSION:
+                log.info(f'Player already current: v{PLAYER_VERSION}')
+                self._emit_player_status(
+                    update_status='current',
+                    player_version=PLAYER_VERSION,
+                    latest_player_version=latest_version,
+                )
+                return
+
+            log.info(f'Updating SignIT player from v{PLAYER_VERSION} to v{latest_version}')
+            self._emit_player_status(
+                update_status='downloading',
+                player_version=PLAYER_VERSION,
+                latest_player_version=latest_version,
+            )
+
+            if os.path.exists(update_dir):
+                shutil.rmtree(update_dir)
+            os.makedirs(update_dir, exist_ok=True)
+
+            for relative_path in files:
+                self._download_update_file(relative_path, update_dir)
+
+            required = os.path.join(update_dir, 'player.py')
+            if not os.path.exists(required):
+                raise RuntimeError('Update package did not include player.py')
+
+            self._emit_player_status(update_status='installing', latest_player_version=latest_version)
+            for relative_path in files:
+                source = os.path.join(update_dir, relative_path)
+                destination = os.path.join('/opt/signit', relative_path)
+                if not os.path.exists(source):
+                    continue
+                os.makedirs(os.path.dirname(destination), exist_ok=True)
+                shutil.copy2(source, destination)
+
+            requirements = '/opt/signit/requirements.txt'
+            if os.path.exists(requirements):
+                subprocess.run(
+                    [sys.executable, '-m', 'pip', 'install', '-q', '-r', requirements],
+                    check=True,
+                    timeout=180,
+                )
+
+            self._emit_player_status(
+                update_status='success',
+                player_version=latest_version,
+                latest_player_version=latest_version,
+            )
+            log.info('Player update complete; restarting into updated code')
+            time.sleep(1)
+            self._restart_player()
+        except Exception as e:
+            log.error(f'Player update failed: {e}')
+            self._emit_player_status(
+                update_status='failed',
+                update_error=str(e),
+                player_version=PLAYER_VERSION,
+            )
+        finally:
+            self.update_in_progress = False
 
     def _api_get(self, path, device_header=False):
         headers = {}

@@ -156,7 +156,7 @@ def do_register(server_url):
         'resolution': resolution,
         'os_info': os_info,
         'mac_address': mac,
-        'player_version': '1.0.0',
+        'player_version': '1.2.0',
     }
 
     try:

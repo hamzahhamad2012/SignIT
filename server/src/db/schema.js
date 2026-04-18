@@ -163,6 +163,18 @@ export const schema = `
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
   );
 
+  CREATE TABLE IF NOT EXISTS player_update_jobs (
+    device_id TEXT PRIMARY KEY REFERENCES devices(id) ON DELETE CASCADE,
+    target_version TEXT NOT NULL,
+    force BOOLEAN DEFAULT 0,
+    status TEXT DEFAULT 'queued' CHECK(status IN ('queued','sent','checking','downloading','installing','success','failed','current')),
+    requested_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+    requested_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    sent_at DATETIME,
+    completed_at DATETIME,
+    last_error TEXT
+  );
+
   CREATE TABLE IF NOT EXISTS display_walls (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,
@@ -219,6 +231,7 @@ export const schema = `
   CREATE INDEX IF NOT EXISTS idx_schedules_active ON schedules(is_active);
   CREATE INDEX IF NOT EXISTS idx_activity_log_created ON activity_log(created_at);
   CREATE INDEX IF NOT EXISTS idx_activity_log_user ON activity_log(user_id);
+  CREATE INDEX IF NOT EXISTS idx_player_update_jobs_status ON player_update_jobs(status);
   CREATE INDEX IF NOT EXISTS idx_wall_screens_wall ON wall_screens(wall_id);
   CREATE INDEX IF NOT EXISTS idx_widgets_type ON widgets(type);
   CREATE INDEX IF NOT EXISTS idx_pairing_tokens_code ON pairing_tokens(code);

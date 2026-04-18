@@ -7,6 +7,7 @@ import archiver from 'archiver';
 import db from '../db/index.js';
 import { authenticateToken, requireManagementAccess } from '../middleware/auth.js';
 import { logActivity } from '../services/activityLog.js';
+import { getLatestPlayerVersion, PLAYER_DIR, PLAYER_UPDATE_FILES } from '../services/playerVersion.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const router = Router();
@@ -257,6 +258,7 @@ router.get('/install/:code.sh', (req, res) => {
 });
 
 function generateInstallScript(serverUrl, pairingCode) {
+  const latestPlayerVersion = getLatestPlayerVersion();
   return `#!/bin/bash
 set -e
 
@@ -420,7 +422,7 @@ pair_device() {
 
   RESPONSE=\$(curl -sf -X POST "$SERVER_URL/api/setup/pair" \\
     -H "Content-Type: application/json" \\
-    -d "{\\"code\\":\\"$PAIRING_CODE\\",\\"hostname\\":\\"$HOSTNAME\\",\\"resolution\\":\\"$RESOLUTION\\",\\"os_info\\":\\"$OS_INFO\\",\\"mac_address\\":\\"$MAC\\",\\"player_version\\":\\"1.0.0\\"}")
+    -d "{\\"code\\":\\"$PAIRING_CODE\\",\\"hostname\\":\\"$HOSTNAME\\",\\"resolution\\":\\"$RESOLUTION\\",\\"os_info\\":\\"$OS_INFO\\",\\"mac_address\\":\\"$MAC\\",\\"player_version\\":\\"${latestPlayerVersion}\\"}")
 
   if [ $? -ne 0 ]; then
     echo -e "  \${RED}Pairing failed! Check your code and try again.\${NC}"
@@ -547,12 +549,11 @@ finish
 }
 
 router.get('/player-file/:filename', (req, res) => {
-  const allowed = ['player.py', 'config.py', 'setup_server.py', 'requirements.txt'];
   const { filename } = req.params;
-  if (!allowed.includes(filename)) return res.status(404).send('Not found');
+  if (!PLAYER_UPDATE_FILES.includes(filename)) return res.status(404).send('Not found');
 
   try {
-    const filepath = join(__dirname, '..', '..', '..', 'player', filename);
+    const filepath = join(PLAYER_DIR, filename);
     const content = readFileSync(filepath, 'utf-8');
     res.type('text/plain').send(content);
   } catch {
@@ -563,15 +564,23 @@ router.get('/player-file/:filename', (req, res) => {
 router.get('/player-file/setup_ui/:filename', (req, res) => {
   const allowed = ['index.html'];
   const { filename } = req.params;
-  if (!allowed.includes(filename)) return res.status(404).send('Not found');
+  const relativePath = `setup_ui/${filename}`;
+  if (!allowed.includes(filename) || !PLAYER_UPDATE_FILES.includes(relativePath)) return res.status(404).send('Not found');
 
   try {
-    const filepath = join(__dirname, '..', '..', '..', 'player', 'setup_ui', filename);
+    const filepath = join(PLAYER_DIR, 'setup_ui', filename);
     const content = readFileSync(filepath, 'utf-8');
     res.type('text/html').send(content);
   } catch {
     res.status(404).send('File not found');
   }
+});
+
+router.get('/player-manifest', (req, res) => {
+  res.json({
+    version: getLatestPlayerVersion(),
+    files: PLAYER_UPDATE_FILES,
+  });
 });
 
 // --- Downloadable SD card provisioning zip ---

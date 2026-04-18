@@ -325,6 +325,11 @@ test('core API smoke test covers auth, content, devices, schedules, and player r
   assert.equal(health.ok, true);
   assert.equal(health.data.scheduler.timezone, 'America/Chicago');
 
+  const playerManifest = await request('/api/setup/player-manifest');
+  assert.equal(playerManifest.ok, true);
+  assert.equal(playerManifest.data.version, '1.2.0');
+  assert.ok(playerManifest.data.files.includes('player.py'));
+
   const login = await request('/api/auth/login', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -484,6 +489,24 @@ test('core API smoke test covers auth, content, devices, schedules, and player r
   });
   assert.equal(updateDevice.ok, true);
   assert.equal(updateDevice.data.device.orientation, 'portrait');
+
+  const deviceDetail = await request(`/api/devices/${deviceId}`, {
+    headers: { Authorization: authHeaders.Authorization },
+  });
+  assert.equal(deviceDetail.ok, true);
+  assert.equal(deviceDetail.data.device.latest_player_version, '1.2.0');
+  assert.equal(deviceDetail.data.device.needs_player_update, true);
+
+  const updatePlayers = await request('/api/devices/update-player', {
+    method: 'POST',
+    headers: authHeaders,
+    body: JSON.stringify({ device_ids: [deviceId] }),
+  });
+  assert.equal(updatePlayers.ok, true);
+  assert.equal(updatePlayers.data.latest_player_version, '1.2.0');
+  assert.equal(updatePlayers.data.sent.length, 0);
+  assert.equal(updatePlayers.data.queued.length, 1);
+  assert.equal(updatePlayers.data.queued[0].id, deviceId);
 
   const playerConfig = await request('/api/player/config', {
     headers: { 'X-Device-Id': deviceId },

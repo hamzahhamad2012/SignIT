@@ -8,7 +8,7 @@ import Modal from '../components/Modal';
 import toast from 'react-hot-toast';
 import {
   Monitor, ArrowLeft, Thermometer, Cpu, MemoryStick, HardDrive,
-  Clock, Wifi, RotateCw, Camera, Trash2, Edit3, Save, Power, MapPin, Send, Loader2,
+  Clock, Wifi, RotateCw, Camera, Trash2, Edit3, Save, Power, MapPin, Send, Loader2, Download,
 } from 'lucide-react';
 
 export default function DeviceDetail() {
@@ -74,6 +74,16 @@ export default function DeviceDetail() {
     unsubs.push(on('device:player_status', (data) => {
       if (String(data.deviceId) === String(id)) {
         setDevice(prev => prev ? { ...prev, ...data } : prev);
+        if (data.update_status === 'success') {
+          setPendingCmd(null);
+          toast.success('Player update installed. Restarting display player...');
+        } else if (data.update_status === 'failed') {
+          setPendingCmd(null);
+          toast.error(data.update_error || 'Player update failed');
+        } else if (data.update_status === 'current') {
+          setPendingCmd(null);
+          toast.success('Player is already up to date');
+        }
       }
     }));
 
@@ -103,12 +113,15 @@ export default function DeviceDetail() {
   const sendCommand = useCallback((command) => {
     setPendingCmd(command);
     if (cmdTimeout.current) clearTimeout(cmdTimeout.current);
-    cmdTimeout.current = setTimeout(() => setPendingCmd(null), 15000);
+    cmdTimeout.current = setTimeout(() => setPendingCmd(null), command === 'update_player' ? 90000 : 15000);
 
-    api.post(`/devices/${id}/command`, { command }).then(() => {
+    api.post(`/devices/${id}/command`, { command }).then((result) => {
       if (command === 'screenshot') {
         // Poll for the updated screenshot since socket delivery is unreliable for large payloads
         pollForScreenshot(device?.screenshot || null);
+      } else if (command === 'update_player') {
+        toast.success(result.queued ? 'Player update queued until this Pi reconnects' : 'Player update command sent');
+        if (result.queued) setPendingCmd(null);
       } else {
         setTimeout(() => setPendingCmd(prev => prev === command ? null : prev), 3000);
       }
@@ -223,6 +236,7 @@ export default function DeviceDetail() {
                 ['Orientation', device.orientation],
                 ['OS', device.os_info || '—'],
                 ['Player Version', device.player_version || '—'],
+                ['Latest Player', device.latest_player_version || '—'],
                 ['Registered', new Date(device.registered_at).toLocaleDateString()],
                 ['Last Seen', device.last_seen ? new Date(device.last_seen).toLocaleString() : 'Never'],
               ].map(([label, value]) => (
@@ -399,6 +413,46 @@ export default function DeviceDetail() {
 
           {canManage && (
             <>
+              <div className="card">
+                <h2 className="text-sm font-semibold text-zinc-200 mb-3">Player Software</h2>
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="text-zinc-500">Installed</span>
+                    <span className="text-zinc-300 font-mono">{device.player_version || 'unknown'}</span>
+                  </div>
+                  <div className="flex items-center justify-between text-xs">
+                    <span className="text-zinc-500">Latest</span>
+                    <span className="text-zinc-300 font-mono">{device.latest_player_version || 'unknown'}</span>
+                  </div>
+                  {device.needs_player_update ? (
+                    <p className="text-xs text-amber-400">Update available for this Pi.</p>
+                  ) : (
+                    <p className="text-xs text-emerald-400">Player is current.</p>
+                  )}
+                  {device.player_update_status && !['success', 'current'].includes(device.player_update_status) && (
+                    <p className="text-xs text-sky-400">
+                      Update {device.player_update_status}
+                      {device.player_update_target_version ? ` to ${device.player_update_target_version}` : ''}
+                    </p>
+                  )}
+                  <button
+                    onClick={() => sendCommand('update_player')}
+                    disabled={!!pendingCmd}
+                    className="btn-primary w-full text-xs disabled:opacity-50"
+                  >
+                    {pendingCmd === 'update_player' ? (
+                      <Loader2 size={13} className="animate-spin" />
+                    ) : (
+                      <Download size={13} />
+                    )}
+                    {pendingCmd === 'update_player' ? 'Updating...' : 'Update Player'}
+                  </button>
+                  {device.status !== 'online' && (
+                    <p className="text-[11px] text-zinc-600">Offline updates are queued and sent when the Pi reconnects.</p>
+                  )}
+                </div>
+              </div>
+
               <div className="card">
                 <h2 className="text-sm font-semibold text-zinc-200 mb-3">Remote Commands</h2>
                 <div className="grid grid-cols-2 gap-2">
