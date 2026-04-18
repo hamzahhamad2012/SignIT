@@ -399,9 +399,28 @@ export default function DeviceDetail() {
 
         <div className="space-y-4">
           <div className="card">
-            <h2 className="text-sm font-semibold text-zinc-200 mb-3">Assigned Playlist</h2>
+            <h2 className="text-sm font-semibold text-zinc-200 mb-3">Playlist State</h2>
+            <div className="space-y-2 mb-3">
+              <div className="rounded-lg bg-surface-overlay px-3 py-2">
+                <p className="text-[11px] uppercase tracking-wide text-zinc-600">Current playlist</p>
+                <p className="text-sm font-semibold text-zinc-200 mt-0.5">
+                  {device.current_playlist_name || 'Waiting for player poll'}
+                </p>
+              </div>
+              <div className="grid grid-cols-2 gap-2">
+                <div className="rounded-lg bg-surface-overlay px-3 py-2">
+                  <p className="text-[11px] uppercase tracking-wide text-zinc-600">Assigned</p>
+                  <p className="text-xs text-zinc-300 mt-0.5 truncate">{device.assigned_playlist_name || 'None'}</p>
+                </div>
+                <div className="rounded-lg bg-surface-overlay px-3 py-2">
+                  <p className="text-[11px] uppercase tracking-wide text-zinc-600">Group default</p>
+                  <p className="text-xs text-zinc-300 mt-0.5 truncate">{device.group_default_playlist_name || 'None'}</p>
+                </div>
+              </div>
+            </div>
             {canManage ? (
               <>
+                <label className="block text-xs font-medium text-zinc-400 mb-1.5">Direct assignment override</label>
                 <select
                   value={device.assigned_playlist_id || ''}
                   onChange={(e) => handleAssignPlaylist(e.target.value ? parseInt(e.target.value) : null)}

@@ -170,6 +170,13 @@ export default function Devices() {
                 </div>
               )}
 
+              <div className="mb-3 rounded-lg bg-surface-overlay px-3 py-2">
+                <p className="text-[11px] uppercase tracking-wide text-zinc-600">Current Playlist</p>
+                <p className="text-sm font-medium text-zinc-200 truncate mt-0.5">
+                  {device.current_playlist_name || device.assigned_playlist_name || device.group_default_playlist_name || 'No playlist'}
+                </p>
+              </div>
+
               <div className="grid grid-cols-2 gap-2 mt-auto">
                 {device.cpu_temp != null && (
                   <div className="flex items-center gap-1.5 text-xs text-zinc-500">

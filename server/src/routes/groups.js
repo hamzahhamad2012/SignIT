@@ -29,9 +29,41 @@ router.get('/:id', (req, res) => {
   `).get(req.params.id);
   if (!group) return res.status(404).json({ error: 'Group not found' });
 
-  const devices = db.prepare('SELECT id, name, status, last_seen FROM devices WHERE group_id = ?')
+  const devices = db.prepare(`
+    SELECT d.id, d.name, d.status, d.last_seen,
+      cp.name as current_playlist_name,
+      ap.name as assigned_playlist_name,
+      COALESCE(cp.name, ap.name, p.name) as playlist_name
+    FROM devices d
+    LEFT JOIN playlists cp ON cp.id = d.current_playlist_id
+    LEFT JOIN playlists ap ON ap.id = d.assigned_playlist_id
+    LEFT JOIN groups g ON g.id = d.group_id
+    LEFT JOIN playlists p ON p.id = g.default_playlist_id
+    WHERE d.group_id = ?
+    ORDER BY d.name COLLATE NOCASE ASC
+  `)
     .all(req.params.id);
   group.devices = devices;
+
+  group.schedules = db.prepare(`
+    SELECT s.*, p.name as playlist_name, p.layout_config as playlist_layout_config
+    FROM schedules s
+    JOIN playlists p ON p.id = s.playlist_id
+    WHERE s.group_id = ?
+    ORDER BY s.priority DESC, s.created_at DESC
+  `).all(req.params.id).map((schedule) => {
+    let layoutConfig = {};
+    try {
+      layoutConfig = JSON.parse(schedule.playlist_layout_config || '{}');
+    } catch {
+      layoutConfig = {};
+    }
+    delete schedule.playlist_layout_config;
+    schedule.system_action = layoutConfig.system_action || null;
+    schedule.is_system_playlist = Boolean(layoutConfig.system_action);
+    return schedule;
+  });
+
   res.json({ group });
 });
 

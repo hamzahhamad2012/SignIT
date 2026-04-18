@@ -30,13 +30,19 @@ router.get('/', authenticateToken, (req, res) => {
   const { group_id, status, search } = req.query;
   const access = buildDeviceAccessClause(req.user, 'd');
   let query = `
-    SELECT d.*, g.name as group_name, p.name as playlist_name,
+    SELECT d.*, g.name as group_name,
+      cp.name as current_playlist_name,
+      ap.name as assigned_playlist_name,
+      gp.name as group_default_playlist_name,
+      COALESCE(cp.name, ap.name, gp.name) as playlist_name,
       pu.status as player_update_status,
       pu.target_version as player_update_target_version,
       pu.last_error as player_update_error
     FROM devices d
     LEFT JOIN groups g ON g.id = d.group_id
-    LEFT JOIN playlists p ON p.id = d.current_playlist_id
+    LEFT JOIN playlists cp ON cp.id = d.current_playlist_id
+    LEFT JOIN playlists ap ON ap.id = d.assigned_playlist_id
+    LEFT JOIN playlists gp ON gp.id = g.default_playlist_id
     LEFT JOIN player_update_jobs pu ON pu.device_id = d.id
     WHERE ${access.sql}
   `;
@@ -149,13 +155,19 @@ router.get('/:id', authenticateToken, (req, res) => {
   }
 
   const device = db.prepare(`
-    SELECT d.*, g.name as group_name, p.name as playlist_name,
+    SELECT d.*, g.name as group_name,
+      cp.name as current_playlist_name,
+      ap.name as assigned_playlist_name,
+      gp.name as group_default_playlist_name,
+      COALESCE(cp.name, ap.name, gp.name) as playlist_name,
       pu.status as player_update_status,
       pu.target_version as player_update_target_version,
       pu.last_error as player_update_error
     FROM devices d
     LEFT JOIN groups g ON g.id = d.group_id
-    LEFT JOIN playlists p ON p.id = d.current_playlist_id
+    LEFT JOIN playlists cp ON cp.id = d.current_playlist_id
+    LEFT JOIN playlists ap ON ap.id = d.assigned_playlist_id
+    LEFT JOIN playlists gp ON gp.id = g.default_playlist_id
     LEFT JOIN player_update_jobs pu ON pu.device_id = d.id
     WHERE d.id = ?
   `).get(req.params.id);
