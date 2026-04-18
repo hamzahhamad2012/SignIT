@@ -27,6 +27,37 @@ function activePlayerUpdateStatus(status) {
   return status && !['success', 'current'].includes(status);
 }
 
+function getPlaylistState(device) {
+  const source = device.playlist_source
+    || (device.current_playlist_name ? 'current'
+      : device.assigned_playlist_name ? 'assigned'
+        : device.group_default_playlist_name ? 'group_default'
+          : 'none');
+  const name = device.playback_playlist_name
+    || device.current_playlist_name
+    || device.assigned_playlist_name
+    || device.group_default_playlist_name
+    || 'No playlist';
+
+  if (source === 'current') {
+    return {
+      name,
+      label: device.status === 'online' ? 'Now playing' : 'Last reported',
+      className: 'text-emerald-300',
+    };
+  }
+
+  if (source === 'assigned') {
+    return { name, label: 'Assigned direct', className: 'text-sky-300' };
+  }
+
+  if (source === 'group_default') {
+    return { name, label: 'Group default', className: 'text-violet-300' };
+  }
+
+  return { name, label: 'No playlist', className: 'text-zinc-400' };
+}
+
 export default function Devices() {
   const { user } = useAuth();
   const [devices, setDevices] = useState([]);
@@ -50,7 +81,8 @@ export default function Devices() {
   useEffect(() => {
     const unsub1 = on('device:status', fetchDevices);
     const unsub2 = on('device:heartbeat', fetchDevices);
-    return () => { unsub1(); unsub2(); };
+    const unsub3 = on('device:playlist', fetchDevices);
+    return () => { unsub1(); unsub2(); unsub3(); };
   }, [on]);
 
   const outdatedCount = devices.filter((device) => device.needs_player_update).length;
@@ -139,12 +171,15 @@ export default function Devices() {
         />
       ) : (
         <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
-          {devices.map((device) => (
-            <Link
-              key={device.id}
-              to={`/devices/${device.id}`}
-              className="card hover:border-accent/30 transition-all duration-200 group"
-            >
+          {devices.map((device) => {
+            const playlistState = getPlaylistState(device);
+
+            return (
+              <Link
+                key={device.id}
+                to={`/devices/${device.id}`}
+                className="card hover:border-accent/30 transition-all duration-200 group"
+              >
               <div className="flex items-start justify-between mb-3">
                 <div className="flex items-center gap-2.5">
                   <div className="w-10 h-10 rounded-xl bg-surface-overlay flex items-center justify-center group-hover:bg-accent/10 transition-colors">
@@ -171,9 +206,11 @@ export default function Devices() {
               )}
 
               <div className="mb-3 rounded-lg bg-surface-overlay px-3 py-2">
-                <p className="text-[11px] uppercase tracking-wide text-zinc-600">Current Playlist</p>
-                <p className="text-sm font-medium text-zinc-200 truncate mt-0.5">
-                  {device.current_playlist_name || device.assigned_playlist_name || device.group_default_playlist_name || 'No playlist'}
+                <p className={`text-[11px] uppercase tracking-wide font-semibold ${playlistState.className}`}>
+                  {playlistState.label}
+                </p>
+                <p className="text-sm font-semibold text-zinc-100 truncate mt-0.5">
+                  {playlistState.name}
                 </p>
               </div>
 
@@ -221,8 +258,9 @@ export default function Devices() {
                   )}
                 </div>
               )}
-            </Link>
-          ))}
+              </Link>
+            );
+          })}
         </div>
       )}
 

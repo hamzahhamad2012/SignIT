@@ -33,7 +33,15 @@ router.get('/:id', (req, res) => {
     SELECT d.id, d.name, d.status, d.last_seen,
       cp.name as current_playlist_name,
       ap.name as assigned_playlist_name,
-      COALESCE(cp.name, ap.name, p.name) as playlist_name
+      p.name as group_default_playlist_name,
+      COALESCE(cp.name, ap.name, p.name) as playlist_name,
+      COALESCE(cp.name, ap.name, p.name) as playback_playlist_name,
+      CASE
+        WHEN cp.id IS NOT NULL THEN 'current'
+        WHEN ap.id IS NOT NULL THEN 'assigned'
+        WHEN p.id IS NOT NULL THEN 'group_default'
+        ELSE 'none'
+      END as playlist_source
     FROM devices d
     LEFT JOIN playlists cp ON cp.id = d.current_playlist_id
     LEFT JOIN playlists ap ON ap.id = d.assigned_playlist_id

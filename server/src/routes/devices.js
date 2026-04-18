@@ -35,6 +35,13 @@ router.get('/', authenticateToken, (req, res) => {
       ap.name as assigned_playlist_name,
       gp.name as group_default_playlist_name,
       COALESCE(cp.name, ap.name, gp.name) as playlist_name,
+      COALESCE(cp.name, ap.name, gp.name) as playback_playlist_name,
+      CASE
+        WHEN cp.id IS NOT NULL THEN 'current'
+        WHEN ap.id IS NOT NULL THEN 'assigned'
+        WHEN gp.id IS NOT NULL THEN 'group_default'
+        ELSE 'none'
+      END as playlist_source,
       pu.status as player_update_status,
       pu.target_version as player_update_target_version,
       pu.last_error as player_update_error
@@ -160,6 +167,13 @@ router.get('/:id', authenticateToken, (req, res) => {
       ap.name as assigned_playlist_name,
       gp.name as group_default_playlist_name,
       COALESCE(cp.name, ap.name, gp.name) as playlist_name,
+      COALESCE(cp.name, ap.name, gp.name) as playback_playlist_name,
+      CASE
+        WHEN cp.id IS NOT NULL THEN 'current'
+        WHEN ap.id IS NOT NULL THEN 'assigned'
+        WHEN gp.id IS NOT NULL THEN 'group_default'
+        ELSE 'none'
+      END as playlist_source,
       pu.status as player_update_status,
       pu.target_version as player_update_target_version,
       pu.last_error as player_update_error

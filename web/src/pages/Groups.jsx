@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { api } from '../api/client';
+import { useSocket } from '../hooks/useSocket';
 import Modal from '../components/Modal';
 import EmptyState from '../components/EmptyState';
 import ScheduleCalendar from './ScheduleCalendar';
@@ -53,6 +54,72 @@ function getDayLabel(daysOfWeek) {
   return days.map((day) => dayLabels[Number(day)]).join(', ');
 }
 
+function timeAgo(dateStr) {
+  if (!dateStr) return 'Never';
+  const diff = Date.now() - new Date(dateStr).getTime();
+  const mins = Math.floor(diff / 60000);
+  if (mins < 1) return 'Just now';
+  if (mins < 60) return `${mins}m ago`;
+  const hrs = Math.floor(mins / 60);
+  if (hrs < 24) return `${hrs}h ago`;
+  return `${Math.floor(hrs / 24)}d ago`;
+}
+
+function getPlaybackState(device) {
+  const source = device.playlist_source
+    || (device.current_playlist_name ? 'current'
+      : device.assigned_playlist_name ? 'assigned'
+        : device.group_default_playlist_name ? 'group_default'
+          : 'none');
+  const name = device.playback_playlist_name
+    || device.current_playlist_name
+    || device.assigned_playlist_name
+    || device.group_default_playlist_name
+    || 'No playlist';
+
+  if (source === 'current') {
+    return {
+      name,
+      label: device.status === 'online' ? 'Now playing' : 'Last reported playing',
+      note: 'Reported by the player during its latest playlist poll.',
+      dot: 'bg-emerald-400',
+      shell: 'border-emerald-500/20 bg-emerald-500/10',
+      text: 'text-emerald-300',
+    };
+  }
+
+  if (source === 'assigned') {
+    return {
+      name,
+      label: 'Assigned directly',
+      note: 'Waiting for the player to poll and confirm playback.',
+      dot: 'bg-sky-400',
+      shell: 'border-sky-500/20 bg-sky-500/10',
+      text: 'text-sky-300',
+    };
+  }
+
+  if (source === 'group_default') {
+    return {
+      name,
+      label: 'Group default',
+      note: 'Will play when no active schedule overrides it.',
+      dot: 'bg-violet-400',
+      shell: 'border-violet-500/20 bg-violet-500/10',
+      text: 'text-violet-300',
+    };
+  }
+
+  return {
+    name,
+    label: 'No playlist',
+    note: 'Assign a playlist or create a group schedule.',
+    dot: 'bg-zinc-500',
+    shell: 'border-surface-border bg-surface',
+    text: 'text-zinc-400',
+  };
+}
+
 export default function Groups() {
   const [groups, setGroups] = useState([]);
   const [playlists, setPlaylists] = useState([]);
@@ -65,9 +132,10 @@ export default function Groups() {
   const [showSchedule, setShowSchedule] = useState(false);
   const [form, setForm] = useState(blankGroupForm);
   const [scheduleForm, setScheduleForm] = useState(blankScheduleForm);
+  const { on } = useSocket();
 
-  const fetchGroups = () => {
-    setLoading(true);
+  const fetchGroups = (showSpinner = true) => {
+    if (showSpinner) setLoading(true);
     Promise.all([
       api.get('/groups'),
       api.get('/playlists'),
@@ -87,6 +155,21 @@ export default function Groups() {
   };
 
   useEffect(() => { fetchGroups(); }, []);
+
+  useEffect(() => {
+    const refreshQuietly = () => fetchGroups(false);
+    const unsubStatus = on('device:status', refreshQuietly);
+    const unsubHeartbeat = on('device:heartbeat', refreshQuietly);
+    const unsubPlaylist = on('device:playlist', refreshQuietly);
+    const interval = setInterval(refreshQuietly, 30000);
+
+    return () => {
+      unsubStatus();
+      unsubHeartbeat();
+      unsubPlaylist();
+      clearInterval(interval);
+    };
+  }, [on]);
 
   const selectedGroup = useMemo(
     () => groups.find((group) => String(group.id) === String(selectedGroupId)) || groups[0],
@@ -437,25 +520,48 @@ export default function Groups() {
                     <p className="text-sm text-zinc-500">No players are assigned to this group yet.</p>
                   ) : (
                     <div className="space-y-2">
-                      {groupDevices.map((device) => (
-                        <Link key={device.id} to={`/devices/${device.id}`} className="block rounded-xl bg-surface-overlay hover:bg-surface-hover p-3 transition-colors">
-                          <div className="flex items-start justify-between gap-3">
-                            <div className="min-w-0">
-                              <div className="flex items-center gap-2">
-                                <Monitor size={14} className="text-zinc-500" />
-                                <p className="text-sm font-semibold text-zinc-200 truncate">{device.name}</p>
+                      {groupDevices.map((device) => {
+                        const playback = getPlaybackState(device);
+                        const hasDifferentAssigned = device.assigned_playlist_name
+                          && device.assigned_playlist_name !== playback.name;
+
+                        return (
+                          <Link key={device.id} to={`/devices/${device.id}`} className="block rounded-xl bg-surface-overlay hover:bg-surface-hover p-3 transition-colors">
+                            <div className="flex items-start justify-between gap-3">
+                              <div className="min-w-0 flex-1">
+                                <div className="flex items-center gap-2">
+                                  <Monitor size={14} className="text-zinc-500" />
+                                  <p className="text-sm font-semibold text-zinc-200 truncate">{device.name}</p>
+                                </div>
+
+                                <div className={`mt-2 rounded-lg border px-2.5 py-2 ${playback.shell}`}>
+                                  <div className="flex items-center gap-2 min-w-0">
+                                    <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${playback.dot}`} />
+                                    <p className={`text-[11px] font-semibold uppercase tracking-wide ${playback.text}`}>
+                                      {playback.label}
+                                    </p>
+                                  </div>
+                                  <p className="text-sm font-semibold text-zinc-100 truncate mt-1">{playback.name}</p>
+                                  <p className="text-[11px] text-zinc-500 mt-0.5">{playback.note}</p>
+                                </div>
+
+                                <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-zinc-600">
+                                  {hasDifferentAssigned && (
+                                    <span>Assigned override: <span className="text-zinc-400">{device.assigned_playlist_name}</span></span>
+                                  )}
+                                  {device.group_default_playlist_name && (
+                                    <span>Group default: <span className="text-zinc-400">{device.group_default_playlist_name}</span></span>
+                                  )}
+                                  <span className="flex items-center gap-1">
+                                    <Clock size={10} /> Seen {timeAgo(device.last_seen)}
+                                  </span>
+                                </div>
                               </div>
-                              <p className="text-xs text-zinc-500 mt-1">
-                                Current: <span className="text-zinc-300">{device.current_playlist_name || 'Waiting for poll'}</span>
-                              </p>
-                              <p className="text-xs text-zinc-600">
-                                Assigned: {device.assigned_playlist_name || 'Uses group default/schedule'}
-                              </p>
+                              <StatusBadge status={device.status} />
                             </div>
-                            <StatusBadge status={device.status} />
-                          </div>
-                        </Link>
-                      ))}
+                          </Link>
+                        );
+                      })}
                     </div>
                   )}
                 </div>

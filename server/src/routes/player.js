@@ -22,6 +22,18 @@ function getDevicePlayerConfig(device) {
   };
 }
 
+function emitPlaylistState(req, deviceId, playlistId, playlistName = null) {
+  const io = req.app.get('io');
+  if (!io) return;
+
+  io.emit('device:playlist', {
+    deviceId,
+    playlistId: playlistId || null,
+    playlistName,
+    updated_at: new Date().toISOString(),
+  });
+}
+
 router.post('/heartbeat', (req, res) => {
   const deviceId = req.headers['x-device-id'];
   if (!deviceId) return res.status(400).json({ error: 'Device ID required' });
@@ -49,7 +61,7 @@ router.post('/heartbeat', (req, res) => {
   }
 
   const playlistId = getActivePlaylistForDevice(deviceId);
-  const needsUpdate = playlistId && playlistId !== device.current_playlist_id;
+  const needsUpdate = (playlistId || null) !== (device.current_playlist_id || null);
 
   res.json({
     status: 'ok',
@@ -69,6 +81,12 @@ router.get('/playlist', (req, res) => {
 
   const playlistId = getActivePlaylistForDevice(deviceId);
   if (!playlistId) {
+    if (device.current_playlist_id) {
+      db.prepare('UPDATE devices SET current_playlist_id = NULL WHERE id = ?')
+        .run(deviceId);
+      emitPlaylistState(req, deviceId, null);
+    }
+
     return res.json({
       playlist: null,
       config: getDevicePlayerConfig(device),
@@ -77,8 +95,11 @@ router.get('/playlist', (req, res) => {
 
   const content = getPlaylistContent(playlistId);
 
-  db.prepare('UPDATE devices SET current_playlist_id = ? WHERE id = ?')
-    .run(playlistId, deviceId);
+  if (playlistId !== device.current_playlist_id) {
+    db.prepare('UPDATE devices SET current_playlist_id = ? WHERE id = ?')
+      .run(playlistId, deviceId);
+    emitPlaylistState(req, deviceId, playlistId, content?.name || null);
+  }
 
   res.json({
     playlist: content,
