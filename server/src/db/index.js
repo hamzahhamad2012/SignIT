@@ -92,6 +92,16 @@ function applyMigrations() {
   db.prepare('CREATE INDEX IF NOT EXISTS idx_player_update_jobs_status ON player_update_jobs(status)').run();
 
   db.prepare("UPDATE users SET status = 'active' WHERE status IS NULL OR status = ''").run();
+  db.prepare(`
+    UPDATE assets
+    SET type = 'stream', updated_at = CURRENT_TIMESTAMP
+    WHERE type = 'url'
+      AND (
+        lower(url) LIKE 'rtsp://%'
+        OR lower(url) LIKE 'rtsps://%'
+      )
+  `).run();
+
   const uncategorized = db.prepare(`
     SELECT id, action
     FROM activity_log

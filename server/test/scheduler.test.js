@@ -293,6 +293,10 @@ test('database migrations upgrade older production databases before migrated ind
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP
       );
     `);
+    legacyDb.prepare(`
+      INSERT INTO assets (name, type, url)
+      VALUES ('Legacy RTSP Camera', 'url', 'rtsps://192.168.1.55:7441/legacy')
+    `).run();
   } finally {
     legacyDb.close();
   }
@@ -314,6 +318,8 @@ test('database migrations upgrade older production databases before migrated ind
     assert.ok(widgetColumns.includes('asset_id'));
     assert.ok(indexes.includes('idx_assets_folder'));
     assert.ok(indexes.includes('idx_activity_log_category'));
+    const migratedCamera = migrated.prepare("SELECT type FROM assets WHERE name = 'Legacy RTSP Camera'").get();
+    assert.equal(migratedCamera.type, 'stream');
   } finally {
     migrated.close();
     rmSync(legacyDir, { recursive: true, force: true });
@@ -327,7 +333,7 @@ test('core API smoke test covers auth, content, devices, schedules, and player r
 
   const playerManifest = await request('/api/setup/player-manifest');
   assert.equal(playerManifest.ok, true);
-  assert.equal(playerManifest.data.version, '1.5.0');
+  assert.equal(playerManifest.data.version, '1.5.1');
   assert.ok(playerManifest.data.files.includes('player.py'));
 
   const login = await request('/api/auth/login', {
@@ -444,6 +450,18 @@ test('core API smoke test covers auth, content, devices, schedules, and player r
   assert.equal(cameraAsset.data.asset.type, 'stream');
   assert.equal(cameraAsset.data.asset.metadata.playback, 'native-player');
 
+  const staleCameraAsset = await request('/api/assets', {
+    method: 'POST',
+    headers: authHeaders,
+    body: JSON.stringify({
+      name: 'Old Camera',
+      type: 'url',
+      url: 'rtsp://192.168.1.55:7441/legacy',
+    }),
+  });
+  assert.equal(staleCameraAsset.ok, true);
+  assert.equal(staleCameraAsset.data.asset.type, 'stream');
+
   const fallbackPlaylist = await request('/api/playlists', {
     method: 'POST',
     headers: authHeaders,
@@ -526,7 +544,7 @@ test('core API smoke test covers auth, content, devices, schedules, and player r
     headers: { Authorization: authHeaders.Authorization },
   });
   assert.equal(deviceDetail.ok, true);
-  assert.equal(deviceDetail.data.device.latest_player_version, '1.5.0');
+  assert.equal(deviceDetail.data.device.latest_player_version, '1.5.1');
   assert.equal(deviceDetail.data.device.needs_player_update, true);
 
   const updatePlayers = await request('/api/devices/update-player', {
@@ -535,7 +553,7 @@ test('core API smoke test covers auth, content, devices, schedules, and player r
     body: JSON.stringify({ device_ids: [deviceId] }),
   });
   assert.equal(updatePlayers.ok, true);
-  assert.equal(updatePlayers.data.latest_player_version, '1.5.0');
+  assert.equal(updatePlayers.data.latest_player_version, '1.5.1');
   assert.equal(updatePlayers.data.sent.length, 0);
   assert.equal(updatePlayers.data.queued.length, 1);
   assert.equal(updatePlayers.data.queued[0].id, deviceId);

@@ -10,6 +10,8 @@ import {
 } from 'lucide-react';
 
 const typeIcons = { image: Image, video: Film, url: Globe, html: Code, widget: Code, stream: Globe };
+const isRtspUrl = (value) => /^rtsps?:\/\//i.test(String(value || '').trim());
+const getEffectiveType = (item) => isRtspUrl(item?.url) ? 'stream' : item?.asset_type || item?.type;
 
 export default function PlaylistEditor() {
   const { id } = useParams();
@@ -70,17 +72,18 @@ export default function PlaylistEditor() {
   };
 
   const addAsset = (asset) => {
+    const assetType = isRtspUrl(asset.url) ? 'stream' : asset.type;
     const newItem = {
       id: Date.now(),
       asset_id: asset.id,
       asset_name: asset.name,
-      asset_type: asset.type,
+      asset_type: assetType,
       filename: asset.filename,
       url: asset.url,
       thumbnail: asset.thumbnail,
       zone: 'main',
       position: items.length,
-      duration: asset.type === 'video' ? (asset.duration || 30) : 10,
+      duration: assetType === 'video' ? (asset.duration || 30) : 10,
       fit: 'cover',
       muted: 1,
       settings: {},
@@ -132,7 +135,7 @@ export default function PlaylistEditor() {
 
   const getThumb = (item) => {
     if (item.thumbnail) return `/uploads/thumbnails/${item.thumbnail}`;
-    if (item.asset_type === 'image' && item.filename) return `/uploads/images/${item.filename}`;
+    if (getEffectiveType(item) === 'image' && item.filename) return `/uploads/images/${item.filename}`;
     return null;
   };
 
@@ -185,7 +188,8 @@ export default function PlaylistEditor() {
           ) : (
             <div className="space-y-1">
               {items.map((item, idx) => {
-                const Icon = typeIcons[item.asset_type] || Image;
+                const effectiveType = getEffectiveType(item);
+                const Icon = typeIcons[effectiveType] || Image;
                 const thumb = getThumb(item);
 
                 return (
@@ -213,7 +217,7 @@ export default function PlaylistEditor() {
 
                     <div className="flex-1 min-w-0">
                       <p className="text-sm font-medium text-zinc-300 truncate">{item.asset_name}</p>
-                      <p className="text-xs text-zinc-500 capitalize">{item.asset_type}</p>
+                      <p className="text-xs text-zinc-500 capitalize">{effectiveType}</p>
                     </div>
 
                     <div className="flex items-center gap-2 shrink-0">
@@ -289,9 +293,10 @@ export default function PlaylistEditor() {
         ) : (
           <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 max-h-[50vh] overflow-y-auto">
             {visibleAssets.map(asset => {
-              const Icon = typeIcons[asset.type] || Image;
+              const effectiveType = getEffectiveType(asset);
+              const Icon = typeIcons[effectiveType] || Image;
               const thumb = asset.thumbnail ? `/uploads/thumbnails/${asset.thumbnail}`
-                : asset.type === 'image' && asset.filename ? `/uploads/images/${asset.filename}` : null;
+                : effectiveType === 'image' && asset.filename ? `/uploads/images/${asset.filename}` : null;
               return (
                 <button key={asset.id} onClick={() => addAsset(asset)}
                   className="p-2 rounded-lg bg-surface-overlay hover:bg-surface-hover border border-transparent hover:border-accent/30 transition-all text-left">
@@ -303,7 +308,7 @@ export default function PlaylistEditor() {
                     )}
                   </div>
                   <p className="text-xs font-medium text-zinc-300 truncate">{asset.name}</p>
-                  <p className="text-[10px] text-zinc-500 capitalize">{asset.type}</p>
+                  <p className="text-[10px] text-zinc-500 capitalize">{effectiveType}</p>
                   <p className="text-[10px] text-zinc-600 truncate">{asset.folder_name || 'Unfiled'}</p>
                 </button>
               );

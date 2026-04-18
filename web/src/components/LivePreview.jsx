@@ -1,6 +1,9 @@
 import { useState, useEffect, useRef } from 'react';
 import { Play, Pause, SkipForward, Maximize, Minimize, X } from 'lucide-react';
 
+const isRtspUrl = (value) => /^rtsps?:\/\//i.test(String(value || '').trim());
+const getEffectiveType = (item) => isRtspUrl(item?.url) ? 'stream' : item?.asset_type;
+
 export default function LivePreview({ items, transition = 'fade', transitionDuration = 800, bgColor = '#000' }) {
   const [currentIdx, setCurrentIdx] = useState(0);
   const [playing, setPlaying] = useState(true);
@@ -67,6 +70,7 @@ export default function LivePreview({ items, transition = 'fade', transitionDura
         {items.map((item, idx) => {
           const isActive = idx === currentIdx;
           const url = getAssetUrl(item);
+          const effectiveType = getEffectiveType(item);
 
           return (
             <div
@@ -80,18 +84,25 @@ export default function LivePreview({ items, transition = 'fade', transitionDura
                 pointerEvents: isActive ? 'auto' : 'none',
               }}
             >
-              {item.asset_type === 'image' && url && (
+              {effectiveType === 'image' && url && (
                 <img src={url} alt={item.asset_name}
                   className="w-full h-full" style={{ objectFit: item.fit || 'cover' }} />
               )}
-              {item.asset_type === 'video' && url && (
+              {effectiveType === 'video' && url && (
                 <video src={url} muted={item.muted} autoPlay={isActive} loop
                   className="w-full h-full" style={{ objectFit: item.fit || 'cover' }} />
               )}
-              {(item.asset_type === 'url' || item.asset_type === 'stream') && item.url && (
+              {effectiveType === 'stream' && isRtspUrl(item.url) && (
+                <div className="w-full h-full flex flex-col items-center justify-center gap-2 bg-slate-950 text-center px-5">
+                  <div className="w-3 h-3 rounded-full bg-emerald-400 shadow-[0_0_24px_rgba(52,211,153,0.8)]" />
+                  <p className="text-sm font-semibold text-zinc-100">RTSP Camera Stream</p>
+                  <p className="text-xs text-zinc-500 max-w-sm">This preview plays on the Raspberry Pi via the native stream player.</p>
+                </div>
+              )}
+              {(effectiveType === 'url' || effectiveType === 'stream') && item.url && !isRtspUrl(item.url) && (
                 <iframe src={item.url} className="w-full h-full border-none" title={item.asset_name} />
               )}
-              {['html', 'widget'].includes(item.asset_type) && url && (
+              {['html', 'widget'].includes(effectiveType) && url && (
                 <iframe src={url} className="w-full h-full border-none" title={item.asset_name} />
               )}
               {!url && (

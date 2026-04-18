@@ -28,7 +28,7 @@ import psutil
 from config import load_config, save_config, CACHE_DIR, LOG_DIR
 
 CONTENT_SERVER_PORT = 8889
-PLAYER_VERSION = '1.5.0'
+PLAYER_VERSION = '1.5.1'
 UPDATE_FILES = {
     'player.py',
     'config.py',
@@ -630,7 +630,7 @@ class SignITPlayer:
             elif asset_type == 'video':
                 filename = item.get('filename', '')
                 slides_html += f'''<div class="slide" data-duration="{int(vid_dur)}" data-type="video" style="display:{visible}"><video src="{filename}" {muted} autoplay playsinline preload="auto" {loop_attr} style="object-fit:{fit};width:100%;height:100%;"></video></div>'''
-            elif asset_type == 'stream' and self._is_rtsp_stream(item.get('url', '')):
+            elif asset_type in ('url', 'stream') and self._is_rtsp_stream(item.get('url', '')):
                 url = html.escape(item.get('url', ''), quote=True)
                 slides_html += f'''<div class="slide stream-slide" data-duration="{item.get('duration', 30)}" data-stream-url="{url}" style="display:{visible}"><div class="stream-card"><div class="stream-dot"></div><h1>Camera Stream</h1><p>Connecting to RTSP feed...</p></div></div>'''
             elif asset_type in ('url', 'stream'):
