@@ -8,6 +8,20 @@ import { getDeviceDisplayRotation } from '../services/displayRotation.js';
 
 const router = Router();
 
+function getDevicePlayerConfig(device) {
+  const rotation = getDeviceDisplayRotation(device);
+
+  return {
+    device_id: device.id,
+    name: device.name,
+    orientation: device.orientation,
+    display_rotation: rotation.value,
+    display_rotation_degrees: rotation.degrees,
+    resolution: device.resolution,
+    settings: JSON.parse(device.settings || '{}'),
+  };
+}
+
 router.post('/heartbeat', (req, res) => {
   const deviceId = req.headers['x-device-id'];
   if (!deviceId) return res.status(400).json({ error: 'Device ID required' });
@@ -42,6 +56,7 @@ router.post('/heartbeat', (req, res) => {
     playlist_id: playlistId,
     needs_update: needsUpdate,
     server_time: new Date().toISOString(),
+    config: getDevicePlayerConfig(device),
   });
 });
 
@@ -49,15 +64,26 @@ router.get('/playlist', (req, res) => {
   const deviceId = req.headers['x-device-id'];
   if (!deviceId) return res.status(400).json({ error: 'Device ID required' });
 
+  const device = db.prepare('SELECT * FROM devices WHERE id = ?').get(deviceId);
+  if (!device) return res.status(404).json({ error: 'Device not registered' });
+
   const playlistId = getActivePlaylistForDevice(deviceId);
-  if (!playlistId) return res.json({ playlist: null });
+  if (!playlistId) {
+    return res.json({
+      playlist: null,
+      config: getDevicePlayerConfig(device),
+    });
+  }
 
   const content = getPlaylistContent(playlistId);
 
   db.prepare('UPDATE devices SET current_playlist_id = ? WHERE id = ?')
     .run(playlistId, deviceId);
 
-  res.json({ playlist: content });
+  res.json({
+    playlist: content,
+    config: getDevicePlayerConfig(device),
+  });
 });
 
 router.get('/asset/:filename', (req, res) => {
@@ -95,17 +121,8 @@ router.get('/config', (req, res) => {
 
   const device = db.prepare('SELECT * FROM devices WHERE id = ?').get(deviceId);
   if (!device) return res.status(404).json({ error: 'Device not registered' });
-  const rotation = getDeviceDisplayRotation(device);
 
-  res.json({
-    device_id: device.id,
-    name: device.name,
-    orientation: device.orientation,
-    display_rotation: rotation.value,
-    display_rotation_degrees: rotation.degrees,
-    resolution: device.resolution,
-    settings: JSON.parse(device.settings || '{}'),
-  });
+  res.json(getDevicePlayerConfig(device));
 });
 
 export default router;

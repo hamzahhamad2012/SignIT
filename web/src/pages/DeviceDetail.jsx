@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useRef } from 'react';
+import { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { api } from '../api/client';
 import { useSocket } from '../hooks/useSocket';
@@ -9,6 +9,7 @@ import toast from 'react-hot-toast';
 import {
   Monitor, ArrowLeft, Thermometer, Cpu, MemoryStick, HardDrive,
   Clock, Wifi, RotateCw, Camera, Trash2, Edit3, Save, Power, MapPin, Send, Loader2, Download,
+  Moon,
 } from 'lucide-react';
 
 const displayRotations = [
@@ -17,6 +18,23 @@ const displayRotations = [
   { value: 'portrait-right', label: 'Portrait Right', helper: '90°' },
   { value: 'portrait-left', label: 'Portrait Left', helper: '270°' },
 ];
+const dayLabels = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+const defaultQuietDays = '0,1,2,3,4,5,6';
+
+function normalizeDays(daysOfWeek) {
+  const days = (daysOfWeek || '')
+    .split(',')
+    .map((day) => day.trim())
+    .filter(Boolean);
+
+  return [...new Set(days)]
+    .sort((left, right) => Number(left) - Number(right))
+    .join(',');
+}
+
+function isTvOffPlaylist(playlist) {
+  return playlist?.system_action === 'display_off' || playlist?.name === 'TV_OFF';
+}
 
 export default function DeviceDetail() {
   const { id } = useParams();
@@ -30,6 +48,13 @@ export default function DeviceDetail() {
   const [showDelete, setShowDelete] = useState(false);
   const [editingLocation, setEditingLocation] = useState(false);
   const [locationForm, setLocationForm] = useState({});
+  const [schedules, setSchedules] = useState([]);
+  const [quietForm, setQuietForm] = useState({
+    enabled: false,
+    start_time: '22:00',
+    end_time: '06:00',
+    days_of_week: defaultQuietDays,
+  });
   const [pendingCmd, setPendingCmd] = useState(null);
   const cmdTimeout = useRef(null);
   const { on } = useSocket();
@@ -52,6 +77,7 @@ export default function DeviceDetail() {
     if (canManage) {
       api.get('/playlists').then(d => setPlaylists(d.playlists));
       api.get('/groups').then(d => setGroups(d.groups));
+      api.get('/schedules').then(d => setSchedules(d.schedules));
     }
   }, [id, canManage, navigate]);
 
@@ -96,6 +122,33 @@ export default function DeviceDetail() {
 
     return () => unsubs.forEach(fn => fn());
   }, [id, on]);
+
+  const tvOffPlaylist = useMemo(() => playlists.find(isTvOffPlaylist), [playlists]);
+  const quietSchedule = useMemo(() => (
+    schedules.find((schedule) => (
+      String(schedule.device_id || '') === String(id) &&
+      schedule.system_action === 'display_off'
+    ))
+  ), [id, schedules]);
+
+  useEffect(() => {
+    if (!quietSchedule) {
+      setQuietForm({
+        enabled: false,
+        start_time: '22:00',
+        end_time: '06:00',
+        days_of_week: defaultQuietDays,
+      });
+      return;
+    }
+
+    setQuietForm({
+      enabled: Boolean(quietSchedule.is_active),
+      start_time: quietSchedule.start_time || '22:00',
+      end_time: quietSchedule.end_time || '06:00',
+      days_of_week: normalizeDays(quietSchedule.days_of_week || defaultQuietDays),
+    });
+  }, [quietSchedule]);
 
   const pollForScreenshot = useCallback((previousScreenshot) => {
     let attempts = 0;
@@ -163,7 +216,58 @@ export default function DeviceDetail() {
     await api.put(`/devices/${id}`, { display_rotation: displayRotation });
     const updated = await api.get(`/devices/${id}`);
     setDevice(updated.device);
-    toast.success(`Rotation set to ${displayRotation}. Online players will rotate shortly.`);
+    toast.success(`Rotation set to ${displayRotation}. The Pi will also pick this up on its next poll.`);
+  };
+
+  const refreshSchedules = async () => {
+    const updated = await api.get('/schedules');
+    setSchedules(updated.schedules);
+  };
+
+  const toggleQuietDay = (day) => {
+    const days = quietForm.days_of_week.split(',').filter(Boolean);
+    const dayString = String(day);
+    const idx = days.indexOf(dayString);
+
+    if (idx >= 0) days.splice(idx, 1);
+    else days.push(dayString);
+
+    setQuietForm((current) => ({ ...current, days_of_week: normalizeDays(days.join(',')) }));
+  };
+
+  const handleSaveQuietHours = async () => {
+    if (!tvOffPlaylist) return toast.error('TV_OFF system playlist is missing. Restart the server once to seed it.');
+    if (!quietForm.enabled && !quietSchedule) return toast.success('Quiet hours are already off');
+    if (quietForm.enabled && (!quietForm.start_time || !quietForm.end_time)) {
+      return toast.error('Set both quiet-hours start and end time');
+    }
+    if (quietForm.enabled && !normalizeDays(quietForm.days_of_week)) {
+      return toast.error('Select at least one quiet-hours day');
+    }
+
+    const payload = {
+      name: `TV Off - ${device.name}`,
+      playlist_id: tvOffPlaylist.id,
+      device_id: id,
+      group_id: null,
+      priority: 100,
+      start_time: quietForm.start_time,
+      end_time: quietForm.end_time,
+      days_of_week: normalizeDays(quietForm.days_of_week),
+      is_active: quietForm.enabled,
+    };
+
+    try {
+      if (quietSchedule) {
+        await api.put(`/schedules/${quietSchedule.id}`, payload);
+      } else {
+        await api.post('/schedules', payload);
+      }
+      await refreshSchedules();
+      toast.success(quietForm.enabled ? 'Quiet hours saved' : 'Quiet hours paused');
+    } catch (err) {
+      toast.error(err.message);
+    }
   };
 
   const handleSaveLocation = async () => {
@@ -361,6 +465,73 @@ export default function DeviceDetail() {
               </div>
             ) : (
               <p className="text-sm text-zinc-300 capitalize">{device.display_rotation_label || device.orientation}</p>
+            )}
+          </div>
+
+          <div className="card">
+            <h2 className="text-sm font-semibold text-zinc-200 mb-3 flex items-center gap-1.5">
+              <Moon size={14} className="text-amber-300" /> Quiet Hours
+            </h2>
+            {canManage ? (
+              <div className="space-y-3">
+                <label className="flex items-center justify-between gap-3 text-sm text-zinc-300">
+                  <span>Schedule TV off for this player</span>
+                  <input
+                    type="checkbox"
+                    checked={quietForm.enabled}
+                    onChange={(e) => setQuietForm((current) => ({ ...current, enabled: e.target.checked }))}
+                  />
+                </label>
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <label className="block text-[11px] text-zinc-500 mb-1">Off at</label>
+                    <input
+                      type="time"
+                      value={quietForm.start_time}
+                      onChange={(e) => setQuietForm((current) => ({ ...current, start_time: e.target.value }))}
+                      className="w-full text-xs"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] text-zinc-500 mb-1">Back on at</label>
+                    <input
+                      type="time"
+                      value={quietForm.end_time}
+                      onChange={(e) => setQuietForm((current) => ({ ...current, end_time: e.target.value }))}
+                      className="w-full text-xs"
+                    />
+                  </div>
+                </div>
+                <div className="flex flex-wrap gap-1">
+                  {dayLabels.map((label, i) => {
+                    const active = quietForm.days_of_week.split(',').includes(i.toString());
+                    return (
+                      <button
+                        key={i}
+                        type="button"
+                        onClick={() => toggleQuietDay(i)}
+                        className={`w-8 h-7 rounded-md text-[11px] font-medium transition-all ${active ? 'bg-amber-400/20 text-amber-200' : 'bg-surface-overlay text-zinc-500 hover:text-zinc-300'}`}
+                      >
+                        {label}
+                      </button>
+                    );
+                  })}
+                </div>
+                {!tvOffPlaylist && (
+                  <p className="text-xs text-red-300">TV_OFF is not seeded yet. Restart the server once, then refresh this page.</p>
+                )}
+                <button
+                  onClick={handleSaveQuietHours}
+                  disabled={!tvOffPlaylist}
+                  className="btn-primary w-full text-xs disabled:opacity-50"
+                >
+                  <Save size={12} /> Save Quiet Hours
+                </button>
+              </div>
+            ) : quietSchedule?.is_active ? (
+              <p className="text-sm text-zinc-300">{quietSchedule.start_time || '00:00'} - {quietSchedule.end_time || '24:00'}</p>
+            ) : (
+              <p className="text-sm text-zinc-500">No quiet hours set</p>
             )}
           </div>
 

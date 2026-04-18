@@ -381,7 +381,7 @@ install_deps() {
   echo -e "\${BOLD}[1/5] Installing system packages...\${NC}"
   apt-get update -qq > /dev/null 2>&1
   apt-get install -y -qq python3 python3-pip python3-venv chromium-browser \\
-    xdotool scrot unclutter xserver-xorg x11-xserver-utils xinit \\
+    xdotool scrot wlr-randr unclutter xserver-xorg x11-xserver-utils xinit \\
     libatlas-base-dev > /dev/null 2>&1
   echo -e "  \${GREEN}Done\${NC}"
 }
@@ -728,7 +728,7 @@ done
 echo "[2/7] Installing system packages..."
 apt-get update -qq
 apt-get install -y -qq python3 python3-pip python3-venv chromium-browser \\
-  xdotool scrot unclutter xserver-xorg x11-xserver-utils xinit \\
+  xdotool scrot wlr-randr unclutter xserver-xorg x11-xserver-utils xinit \\
   libatlas-base-dev lightdm 2>/dev/null || true
 echo "  Done"
 

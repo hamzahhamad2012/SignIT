@@ -4,7 +4,6 @@ import { getActivePlaylistForDevice, getDevicesImpactedBySchedules } from './sch
 const DEFAULT_TICK_MS = Number.parseInt(process.env.SCHEDULER_TICK_MS || '15000', 10);
 
 let schedulerInterval = null;
-const pendingDispatches = new Map();
 
 function hasLiveDeviceSocket(io, deviceId) {
   const room = io.sockets.adapter.rooms.get(`device:${deviceId}`);
@@ -27,21 +26,13 @@ function evaluateDevices(io) {
     const desiredPlaylistId = getActivePlaylistForDevice(device.id);
     const desiredState = desiredPlaylistId ?? null;
 
-    if (desiredState === device.current_playlist_id) {
-      pendingDispatches.delete(device.id);
-      continue;
-    }
+    if (desiredState === device.current_playlist_id) continue;
 
     if (!hasLiveDeviceSocket(io, device.id)) {
       continue;
     }
 
-    if (pendingDispatches.get(device.id) === desiredState) {
-      continue;
-    }
-
     emitDeviceRefresh(io, device.id, desiredPlaylistId, 'scheduler_tick');
-    pendingDispatches.set(device.id, desiredState);
   }
 }
 
@@ -50,7 +41,6 @@ export function refreshDevices(io, deviceIds = [], reason = 'manual_refresh') {
 
   for (const deviceId of uniqueIds) {
     emitDeviceRefresh(io, deviceId, getActivePlaylistForDevice(deviceId), reason);
-    pendingDispatches.delete(deviceId);
   }
 
   return uniqueIds.length;
@@ -82,5 +72,4 @@ export function stopSchedulerRuntime() {
     schedulerInterval = null;
   }
 
-  pendingDispatches.clear();
 }

@@ -26,7 +26,7 @@ import psutil
 from config import load_config, save_config, CACHE_DIR, LOG_DIR
 
 CONTENT_SERVER_PORT = 8889
-PLAYER_VERSION = '1.3.0'
+PLAYER_VERSION = '1.4.0'
 UPDATE_FILES = {
     'player.py',
     'config.py',
@@ -36,11 +36,11 @@ UPDATE_FILES = {
     'setup_ui/index.html',
 }
 DISPLAY_ROTATIONS = {
-    'landscape': {'xrandr': 'normal', 'degrees': 0, 'orientation': 'landscape'},
-    'landscape-flipped': {'xrandr': 'inverted', 'degrees': 180, 'orientation': 'landscape'},
-    'portrait-right': {'xrandr': 'right', 'degrees': 90, 'orientation': 'portrait'},
-    'portrait-left': {'xrandr': 'left', 'degrees': 270, 'orientation': 'portrait'},
-    'portrait': {'xrandr': 'right', 'degrees': 90, 'orientation': 'portrait'},
+    'landscape': {'xrandr': 'normal', 'wlr': 'normal', 'degrees': 0, 'orientation': 'landscape'},
+    'landscape-flipped': {'xrandr': 'inverted', 'wlr': '180', 'degrees': 180, 'orientation': 'landscape'},
+    'portrait-right': {'xrandr': 'right', 'wlr': '90', 'degrees': 90, 'orientation': 'portrait'},
+    'portrait-left': {'xrandr': 'left', 'wlr': '270', 'degrees': 270, 'orientation': 'portrait'},
+    'portrait': {'xrandr': 'right', 'wlr': '90', 'degrees': 90, 'orientation': 'portrait'},
 }
 
 logging.basicConfig(
@@ -190,7 +190,8 @@ class SignITPlayer:
         while self.running:
             try:
                 metrics = self._get_system_metrics()
-                self._api_post('/api/player/heartbeat', metrics, device_header=True)
+                response = self._api_post('/api/player/heartbeat', metrics, device_header=True)
+                self._apply_server_config(response.get('config'), force_restart=False)
 
                 if self.sio.connected:
                     self.sio.emit('heartbeat', metrics)
@@ -224,6 +225,7 @@ class SignITPlayer:
         """Fetch and display the latest playlist."""
         try:
             res = self._api_get('/api/player/playlist', device_header=True)
+            self._apply_server_config(res.get('config'), force_restart=False)
             playlist = res.get('playlist')
 
             if not playlist:
@@ -263,75 +265,130 @@ class SignITPlayer:
         """Pull device settings from the server and apply display-level changes."""
         try:
             server_config = self._api_get('/api/player/config', device_header=True)
-            previous_rotation = self.config.get('display_rotation') or self.config.get('orientation', 'landscape')
-            display_rotation = server_config.get('display_rotation') or server_config.get('orientation') or 'landscape'
-            if display_rotation not in DISPLAY_ROTATIONS:
-                display_rotation = 'landscape'
-
-            rotation_info = DISPLAY_ROTATIONS[display_rotation]
-            self.config['display_rotation'] = display_rotation
-            self.config['orientation'] = rotation_info['orientation']
-            if server_config.get('resolution'):
-                self.config['resolution'] = server_config.get('resolution')
-            save_config(self.config)
-
-            changed = previous_rotation != display_rotation
-            self._apply_orientation(display_rotation)
-
-            if force_restart or changed:
-                log.info(f'Display config changed: rotation={display_rotation}')
-                self.current_playlist = None
-                if self.chromium_proc and self.chromium_proc.poll() is None:
-                    self.chromium_proc.terminate()
-                    try:
-                        self.chromium_proc.wait(timeout=5)
-                    except Exception:
-                        self.chromium_proc.kill()
-                    self.chromium_proc = None
-
+            self._apply_server_config(server_config, force_restart=force_restart)
             return server_config
         except Exception as e:
             log.warning(f'Could not refresh device config: {e}')
             return {}
 
+    def _apply_server_config(self, server_config, force_restart=False):
+        """Apply config returned by player polling, heartbeat, or /config."""
+        if not server_config:
+            return False
+
+        previous_rotation = self.config.get('display_rotation') or self.config.get('orientation', 'landscape')
+        previous_resolution = self.config.get('resolution')
+        display_rotation = server_config.get('display_rotation') or server_config.get('orientation') or 'landscape'
+        if display_rotation not in DISPLAY_ROTATIONS:
+            display_rotation = 'landscape'
+
+        rotation_info = DISPLAY_ROTATIONS[display_rotation]
+        resolution = server_config.get('resolution') or previous_resolution
+        self.config['display_rotation'] = display_rotation
+        self.config['orientation'] = rotation_info['orientation']
+        if resolution:
+            self.config['resolution'] = resolution
+        save_config(self.config)
+
+        changed = previous_rotation != display_rotation or previous_resolution != resolution
+        if changed or force_restart:
+            self._apply_orientation(display_rotation)
+
+        if force_restart or changed:
+            log.info(f'Display config changed: rotation={display_rotation}, resolution={resolution}')
+            self.current_playlist = None
+            if self.chromium_proc and self.chromium_proc.poll() is None:
+                self.chromium_proc.terminate()
+                try:
+                    self.chromium_proc.wait(timeout=5)
+                except Exception:
+                    self.chromium_proc.kill()
+                self.chromium_proc = None
+
+        return changed
+
+    def _apply_orientation_xrandr(self, rotation_info, env):
+        query = subprocess.run(
+            ['xrandr', '--query'],
+            capture_output=True, text=True, env=env, timeout=5
+        )
+        if query.returncode != 0:
+            raise RuntimeError(query.stderr.strip() or 'xrandr query failed')
+
+        output = None
+        for line in query.stdout.splitlines():
+            if ' connected' in line:
+                output = line.split()[0]
+                break
+        if not output:
+            raise RuntimeError('no connected display output found')
+
+        result = subprocess.run(
+            ['xrandr', '--output', output, '--rotate', rotation_info['xrandr']],
+            capture_output=True, text=True, env=env, timeout=10
+        )
+        if result.returncode != 0:
+            raise RuntimeError(result.stderr.strip() or 'xrandr rotate failed')
+
+        log.info(f'Applied display orientation via xrandr: {output} -> {rotation_info["xrandr"]}')
+        return True
+
+    def _apply_orientation_wlrandr(self, rotation_info, env):
+        if shutil.which('wlr-randr') is None:
+            raise RuntimeError('wlr-randr not installed')
+
+        query = subprocess.run(
+            ['wlr-randr'],
+            capture_output=True, text=True, env=env, timeout=5
+        )
+        if query.returncode != 0:
+            raise RuntimeError(query.stderr.strip() or 'wlr-randr query failed')
+
+        output = None
+        for line in query.stdout.splitlines():
+            stripped = line.strip()
+            if stripped and not line.startswith(' ') and not stripped.startswith('Modes:'):
+                output = stripped.split()[0]
+                break
+        if not output:
+            raise RuntimeError('no Wayland display output found')
+
+        result = subprocess.run(
+            ['wlr-randr', '--output', output, '--transform', rotation_info['wlr']],
+            capture_output=True, text=True, env=env, timeout=10
+        )
+        if result.returncode != 0:
+            raise RuntimeError(result.stderr.strip() or 'wlr-randr rotate failed')
+
+        log.info(f'Applied display orientation via wlr-randr: {output} -> {rotation_info["wlr"]}')
+        return True
+
     def _apply_orientation(self, orientation):
-        """Rotate the X display for physically vertical or horizontal screens."""
+        """Rotate the display, with CSS fallback when the OS cannot rotate output."""
         env = os.environ.copy()
         env.setdefault('DISPLAY', ':0')
         rotation_info = DISPLAY_ROTATIONS.get(orientation, DISPLAY_ROTATIONS['landscape'])
-        rotation = rotation_info['xrandr']
+        errors = []
 
-        try:
-            query = subprocess.run(
-                ['xrandr', '--query'],
-                capture_output=True, text=True, env=env, timeout=5
-            )
-            if query.returncode != 0:
-                raise RuntimeError(query.stderr.strip() or 'xrandr query failed')
+        methods = []
+        if env.get('WAYLAND_DISPLAY'):
+            methods.append(self._apply_orientation_wlrandr)
+        methods.append(self._apply_orientation_xrandr)
+        if self._apply_orientation_wlrandr not in methods:
+            methods.append(self._apply_orientation_wlrandr)
 
-            output = None
-            for line in query.stdout.splitlines():
-                if ' connected' in line:
-                    output = line.split()[0]
-                    break
-            if not output:
-                raise RuntimeError('no connected display output found')
+        for method in methods:
+            try:
+                if method(rotation_info, env):
+                    self.rotation_fallback = False
+                    time.sleep(1)
+                    return True
+            except Exception as e:
+                errors.append(str(e))
 
-            result = subprocess.run(
-                ['xrandr', '--output', output, '--rotate', rotation],
-                capture_output=True, text=True, env=env, timeout=10
-            )
-            if result.returncode != 0:
-                raise RuntimeError(result.stderr.strip() or 'xrandr rotate failed')
-
-            self.rotation_fallback = False
-            log.info(f'Applied display orientation via xrandr: {output} -> {rotation}')
-            time.sleep(1)
-            return True
-        except Exception as e:
-            self.rotation_fallback = orientation if orientation != 'landscape' else False
-            log.warning(f'xrandr orientation failed, using CSS fallback: {e}')
-            return False
+        self.rotation_fallback = orientation if orientation != 'landscape' else False
+        log.warning(f'Hardware display rotation failed, using CSS fallback: {"; ".join(errors)}')
+        return False
 
     def _run_display_command(self, command, env=None):
         try:
@@ -422,6 +479,20 @@ class SignITPlayer:
             except Exception as e:
                 log.error(f'Download failed for {filename}: {e}')
 
+    def _rotation_player_css(self):
+        if not self.rotation_fallback:
+            return '#player{position:fixed;inset:0;}'
+
+        degrees = DISPLAY_ROTATIONS.get(self.rotation_fallback, DISPLAY_ROTATIONS['landscape'])['degrees']
+        if degrees in (90, 270):
+            return (
+                '#player{position:fixed;top:50%;left:50%;width:100vh;height:100vw;'
+                f'transform:translate(-50%,-50%) rotate({degrees}deg);transform-origin:center center;}}'
+            )
+        if degrees == 180:
+            return '#player{position:fixed;inset:0;transform:rotate(180deg);transform-origin:center center;}'
+        return '#player{position:fixed;inset:0;}'
+
     def _generate_display_html(self, playlist):
         """Generate the HTML file that Chromium will display."""
         items = playlist.get('items', [])
@@ -429,13 +500,7 @@ class SignITPlayer:
         transition_duration = playlist.get('transition_duration', 800)
         bg_color = playlist.get('bg_color', '#000000')
         layout = playlist.get('layout', 'fullscreen')
-        player_css = '#player{position:fixed;inset:0;}'
-        if self.rotation_fallback:
-            degrees = DISPLAY_ROTATIONS.get(self.rotation_fallback, DISPLAY_ROTATIONS['landscape'])['degrees']
-            if degrees in (90, 270):
-                player_css = f'#player{{position:fixed;top:50%;left:50%;width:100vh;height:100vw;transform:translate(-50%,-50%) rotate({degrees}deg);transform-origin:center center;}}'
-            elif degrees == 180:
-                player_css = '#player{position:fixed;inset:0;transform:rotate(180deg);transform-origin:center center;}'
+        player_css = self._rotation_player_css()
 
         single_item = len(items) == 1
         slides_html = ''
@@ -533,13 +598,18 @@ html,body{{width:100%;height:100%;overflow:hidden;background:{bg_color}}}
         log.info('Display HTML generated')
 
     def _write_simple_screen(self, title, message, background='#09090b'):
+        player_css = self._rotation_player_css()
         html = f'''<!DOCTYPE html>
 <html><head><meta charset="UTF-8">
 <style>
   * { margin:0; padding:0; }
   body {
-    width:100vw; height:100vh; display:flex; align-items:center; justify-content:center;
+    width:100vw; height:100vh; overflow:hidden;
     background:{background}; color:#fff; font-family:system-ui;
+  }
+  {player_css}
+  #player {
+    display:flex; align-items:center; justify-content:center;
     flex-direction:column; gap:20px;
   }
   .logo { width:80px; height:80px; border-radius:20px; background:linear-gradient(135deg,#6366f1,#7c3aed);
@@ -547,9 +617,11 @@ html,body{{width:100%;height:100%;overflow:hidden;background:{bg_color}}}
   h1 { font-size:24px; font-weight:600; }
   p { color:#71717a; font-size:14px; }
 </style></head><body>
-<div class="logo">S</div>
-<h1>{title}</h1>
-<p>{message}</p>
+<div id="player">
+  <div class="logo">S</div>
+  <h1>{title}</h1>
+  <p>{message}</p>
+</div>
 </body></html>'''
 
         display_path = os.path.join(CACHE_DIR, 'display.html')

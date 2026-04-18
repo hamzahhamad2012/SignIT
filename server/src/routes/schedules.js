@@ -91,6 +91,12 @@ function normalizeSchedulePayload(body, existing = {}) {
   if (merged.start_date && merged.end_date && merged.start_date > merged.end_date) {
     throw new Error('End date cannot be before start date');
   }
+  if (
+    (body.start_time !== undefined || body.end_time !== undefined) &&
+    Boolean(merged.start_time) !== Boolean(merged.end_time)
+  ) {
+    throw new Error('Set both start and end time, or leave both blank for an all-day schedule');
+  }
 
   return normalized;
 }

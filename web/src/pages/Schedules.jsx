@@ -1,12 +1,13 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { api } from '../api/client';
 import Modal from '../components/Modal';
 import EmptyState from '../components/EmptyState';
 import ScheduleCalendar from './ScheduleCalendar';
 import toast from 'react-hot-toast';
-import { Calendar, Plus, Trash2, Edit3, Power, Clock, CalendarDays, List } from 'lucide-react';
+import { Calendar, Plus, Trash2, Edit3, Power, Clock, Search, Filter, Moon, X } from 'lucide-react';
 
 const dayLabels = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+const DEFAULT_DAYS = '0,1,2,3,4,5,6';
 const BLANK_FORM = {
   name: '',
   playlist_id: '',
@@ -15,10 +16,11 @@ const BLANK_FORM = {
   priority: 0,
   start_date: '',
   end_date: '',
-  start_time: '',
-  end_time: '',
-  days_of_week: '0,1,2,3,4,5,6',
+  start_time: '08:00',
+  end_time: '17:00',
+  days_of_week: DEFAULT_DAYS,
   is_active: true,
+  all_day: false,
 };
 
 function normalizeDays(daysOfWeek) {
@@ -32,9 +34,19 @@ function normalizeDays(daysOfWeek) {
     .join(',');
 }
 
+function getScheduleTimeLabel(schedule) {
+  if (!schedule.start_time && !schedule.end_time) return 'All day';
+  return `${schedule.start_time || '00:00'} - ${schedule.end_time || '24:00'}`;
+}
+
+function isTvOffPlaylist(playlist) {
+  return playlist?.system_action === 'display_off' || playlist?.name === 'TV_OFF';
+}
+
 function toForm(schedule) {
   if (!schedule) return { ...BLANK_FORM };
 
+  const allDay = !schedule.start_time && !schedule.end_time;
   return {
     name: schedule.name || '',
     playlist_id: schedule.playlist_id ? String(schedule.playlist_id) : '',
@@ -43,15 +55,12 @@ function toForm(schedule) {
     priority: schedule.priority ?? 0,
     start_date: schedule.start_date || '',
     end_date: schedule.end_date || '',
-    start_time: schedule.start_time || '',
-    end_time: schedule.end_time || '',
-    days_of_week: normalizeDays(schedule.days_of_week || BLANK_FORM.days_of_week),
+    start_time: schedule.start_time || BLANK_FORM.start_time,
+    end_time: schedule.end_time || BLANK_FORM.end_time,
+    days_of_week: normalizeDays(schedule.days_of_week || DEFAULT_DAYS),
     is_active: Boolean(schedule.is_active),
+    all_day: allDay,
   };
-}
-
-function isOvernight(schedule) {
-  return Boolean(schedule.start_time && schedule.end_time && schedule.start_time > schedule.end_time);
 }
 
 export default function Schedules() {
@@ -59,23 +68,38 @@ export default function Schedules() {
   const [playlists, setPlaylists] = useState([]);
   const [groups, setGroups] = useState([]);
   const [devices, setDevices] = useState([]);
+  const [timezone, setTimezone] = useState('server timezone');
   const [loading, setLoading] = useState(true);
   const [modalMode, setModalMode] = useState(null);
   const [editingScheduleId, setEditingScheduleId] = useState(null);
-  const [view, setView] = useState('list');
   const [form, setForm] = useState({ ...BLANK_FORM });
+  const [filters, setFilters] = useState({
+    search: '',
+    target: 'all',
+    playlist: 'all',
+    type: 'all',
+    status: 'active',
+  });
+
+  const tvOffPlaylist = useMemo(() => playlists.find(isTvOffPlaylist), [playlists]);
 
   const fetchAll = () => {
+    setLoading(true);
     Promise.all([
       api.get('/schedules'),
       api.get('/playlists'),
       api.get('/groups'),
       api.get('/devices'),
-    ]).then(([s, p, g, d]) => {
+      api.get('/health').catch(() => null),
+    ]).then(([s, p, g, d, h]) => {
       setSchedules(s.schedules);
       setPlaylists(p.playlists);
       setGroups(g.groups);
       setDevices(d.devices);
+      setTimezone(h?.scheduler?.timezone || 'server timezone');
+      setLoading(false);
+    }).catch((err) => {
+      toast.error(err.message);
       setLoading(false);
     });
   };
@@ -96,6 +120,25 @@ export default function Schedules() {
     setModalMode('create');
   };
 
+  const openTvOff = () => {
+    if (!tvOffPlaylist) {
+      toast.error('TV_OFF system playlist has not been created yet. Restart the server once to seed it.');
+      return;
+    }
+
+    setEditingScheduleId(null);
+    setForm({
+      ...BLANK_FORM,
+      name: 'TV Off',
+      playlist_id: String(tvOffPlaylist.id),
+      start_time: '22:00',
+      end_time: '06:00',
+      priority: 100,
+      all_day: false,
+    });
+    setModalMode('create');
+  };
+
   const openEdit = (schedule) => {
     setEditingScheduleId(schedule.id);
     setForm(toForm(schedule));
@@ -106,14 +149,22 @@ export default function Schedules() {
     if (!form.name || !form.playlist_id) return toast.error('Name and playlist required');
     if (!form.group_id && !form.device_id) return toast.error('Select a group or device');
     if (!normalizeDays(form.days_of_week)) return toast.error('Select at least one active day');
+    if (!form.all_day && (!form.start_time || !form.end_time)) {
+      return toast.error('Set both start and end time, or mark the schedule as all day');
+    }
 
     const payload = {
-      ...form,
+      name: form.name,
       playlist_id: Number.parseInt(form.playlist_id, 10),
       group_id: form.group_id ? Number.parseInt(form.group_id, 10) : null,
       device_id: form.device_id || null,
       priority: Number.parseInt(form.priority, 10) || 0,
+      start_date: form.start_date || null,
+      end_date: form.end_date || null,
+      start_time: form.all_day ? null : form.start_time,
+      end_time: form.all_day ? null : form.end_time,
       days_of_week: normalizeDays(form.days_of_week),
+      is_active: form.is_active,
     };
 
     try {
@@ -150,11 +201,8 @@ export default function Schedules() {
     const dayString = String(day);
     const idx = days.indexOf(dayString);
 
-    if (idx >= 0) {
-      days.splice(idx, 1);
-    } else {
-      days.push(dayString);
-    }
+    if (idx >= 0) days.splice(idx, 1);
+    else days.push(dayString);
 
     setForm((current) => ({
       ...current,
@@ -162,108 +210,193 @@ export default function Schedules() {
     }));
   };
 
+  const filteredSchedules = useMemo(() => {
+    const search = filters.search.trim().toLowerCase();
+
+    return schedules.filter((schedule) => {
+      if (filters.status === 'active' && !schedule.is_active) return false;
+      if (filters.status === 'paused' && schedule.is_active) return false;
+
+      if (filters.type === 'system' && !schedule.system_action) return false;
+      if (filters.type === 'content' && schedule.system_action) return false;
+      if (filters.type === 'tv-off' && schedule.system_action !== 'display_off') return false;
+
+      if (filters.playlist !== 'all' && String(schedule.playlist_id) !== filters.playlist) return false;
+
+      if (filters.target !== 'all') {
+        const [kind, value] = filters.target.split(':');
+        if (kind === 'group' && String(schedule.group_id || '') !== value) return false;
+        if (kind === 'device' && String(schedule.device_id || '') !== value) return false;
+      }
+
+      if (search) {
+        const haystack = [
+          schedule.name,
+          schedule.playlist_name,
+          schedule.group_name,
+          schedule.device_name,
+        ].filter(Boolean).join(' ').toLowerCase();
+        if (!haystack.includes(search)) return false;
+      }
+
+      return true;
+    });
+  }, [filters, schedules]);
+
+  const activeFilterCount = [
+    filters.search,
+    filters.target !== 'all',
+    filters.playlist !== 'all',
+    filters.type !== 'all',
+    filters.status !== 'active',
+  ].filter(Boolean).length;
+
+  const resetFilters = () => setFilters({
+    search: '',
+    target: 'all',
+    playlist: 'all',
+    type: 'all',
+    status: 'active',
+  });
+
   return (
     <div className="space-y-5">
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+      <div className="flex flex-col xl:flex-row xl:items-end justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold text-zinc-100">Schedules</h1>
-          <p className="text-sm text-zinc-500 mt-0.5">Automate content delivery to displays</p>
+          <p className="text-sm text-zinc-500 mt-0.5">
+            Calendar-first scheduling for playlist windows, quiet hours, and per-display overrides.
+          </p>
+          <p className="text-xs text-zinc-600 mt-1">Times are evaluated in {timezone}.</p>
         </div>
         <div className="flex gap-2">
-          <div className="flex rounded-lg border border-surface-border overflow-hidden">
-            <button
-              onClick={() => setView('list')}
-              className={`px-3 py-1.5 text-xs flex items-center gap-1.5 transition-colors ${view === 'list' ? 'bg-accent/15 text-accent' : 'text-zinc-400 hover:text-zinc-200'}`}
-            >
-              <List size={14} /> List
-            </button>
-            <button
-              onClick={() => setView('calendar')}
-              className={`px-3 py-1.5 text-xs flex items-center gap-1.5 transition-colors ${view === 'calendar' ? 'bg-accent/15 text-accent' : 'text-zinc-400 hover:text-zinc-200'}`}
-            >
-              <CalendarDays size={14} /> Calendar
-            </button>
-          </div>
+          <button onClick={openTvOff} className="btn-secondary">
+            <Moon size={15} /> TV Off Schedule
+          </button>
           <button onClick={openCreate} className="btn-primary">
             <Plus size={15} /> New Schedule
           </button>
         </div>
       </div>
 
-      {view === 'calendar' ? (
-        <ScheduleCalendar />
-      ) : loading ? (
-        <div className="space-y-2">
-          {Array(4).fill(0).map((_, i) => <div key={i} className="h-20 bg-surface rounded-xl animate-pulse" />)}
+      <div className="card space-y-3">
+        <div className="flex items-center justify-between gap-3">
+          <div className="flex items-center gap-2 text-sm font-semibold text-zinc-200">
+            <Filter size={15} className="text-accent" />
+            Smart filters
+            {activeFilterCount > 0 && <span className="badge bg-accent/15 text-accent">{activeFilterCount} active</span>}
+          </div>
+          {activeFilterCount > 0 && (
+            <button onClick={resetFilters} className="btn-ghost text-xs">
+              <X size={13} /> Clear
+            </button>
+          )}
         </div>
-      ) : schedules.length === 0 ? (
+
+        <div className="grid md:grid-cols-2 xl:grid-cols-5 gap-2">
+          <label className="relative xl:col-span-1">
+            <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-zinc-600" />
+            <input
+              type="search"
+              value={filters.search}
+              onChange={(e) => setFilters((current) => ({ ...current, search: e.target.value }))}
+              placeholder="Search schedules..."
+              className="w-full pl-9"
+            />
+          </label>
+          <select
+            value={filters.target}
+            onChange={(e) => setFilters((current) => ({ ...current, target: e.target.value }))}
+            className="w-full"
+          >
+            <option value="all">All targets</option>
+            {groups.length > 0 && <option disabled>Groups</option>}
+            {groups.map((group) => <option key={group.id} value={`group:${group.id}`}>{group.name}</option>)}
+            {devices.length > 0 && <option disabled>Devices</option>}
+            {devices.map((device) => <option key={device.id} value={`device:${device.id}`}>{device.name}</option>)}
+          </select>
+          <select
+            value={filters.playlist}
+            onChange={(e) => setFilters((current) => ({ ...current, playlist: e.target.value }))}
+            className="w-full"
+          >
+            <option value="all">All playlists</option>
+            {playlists.map((playlist) => (
+              <option key={playlist.id} value={playlist.id}>
+                {isTvOffPlaylist(playlist) ? 'TV Off' : playlist.name}
+              </option>
+            ))}
+          </select>
+          <select
+            value={filters.type}
+            onChange={(e) => setFilters((current) => ({ ...current, type: e.target.value }))}
+            className="w-full"
+          >
+            <option value="all">All types</option>
+            <option value="content">Content schedules</option>
+            <option value="system">System schedules</option>
+            <option value="tv-off">TV off only</option>
+          </select>
+          <select
+            value={filters.status}
+            onChange={(e) => setFilters((current) => ({ ...current, status: e.target.value }))}
+            className="w-full"
+          >
+            <option value="active">Active only</option>
+            <option value="all">Active and paused</option>
+            <option value="paused">Paused only</option>
+          </select>
+        </div>
+      </div>
+
+      {loading ? (
+        <div className="h-96 bg-surface rounded-xl animate-pulse" />
+      ) : filteredSchedules.length === 0 ? (
         <EmptyState
           icon={Calendar}
-          title="No schedules"
-          description="Create schedules to automatically deploy playlists at specific times."
+          title="No matching schedules"
+          description="Create a schedule or adjust filters to see calendar blocks."
           action={<button onClick={openCreate} className="btn-primary"><Plus size={14} /> Create Schedule</button>}
         />
       ) : (
-        <div className="space-y-2">
-          {schedules.map((schedule) => (
-            <div
-              key={schedule.id}
-              className={`card flex flex-col sm:flex-row sm:items-center gap-3 ${!schedule.is_active ? 'opacity-50' : ''}`}
-            >
-              <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-2 mb-1 flex-wrap">
-                  <h3 className="text-sm font-semibold text-zinc-200">{schedule.name}</h3>
-                  <span className={`badge ${schedule.is_active ? 'bg-emerald-500/15 text-emerald-400' : 'bg-zinc-500/15 text-zinc-400'}`}>
-                    {schedule.is_active ? 'Active' : 'Paused'}
-                  </span>
-                  <span className="badge bg-accent/15 text-accent">Priority {schedule.priority}</span>
-                  {isOvernight(schedule) && (
-                    <span className="badge bg-amber-500/15 text-amber-300">Overnight</span>
-                  )}
+        <ScheduleCalendar
+          schedules={filteredSchedules}
+          loading={loading}
+          onEdit={openEdit}
+        />
+      )}
+
+      {!loading && filteredSchedules.length > 0 && (
+        <div className="grid md:grid-cols-2 xl:grid-cols-3 gap-2">
+          {filteredSchedules.slice(0, 6).map((schedule) => (
+            <div key={schedule.id} className={`card py-3 ${!schedule.is_active ? 'opacity-60' : ''}`}>
+              <div className="flex items-start gap-2">
+                <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${schedule.system_action === 'display_off' ? 'bg-zinc-900 text-amber-300' : 'bg-accent/15 text-accent'}`}>
+                  {schedule.system_action === 'display_off' ? <Moon size={15} /> : <Clock size={15} />}
                 </div>
-                <div className="flex items-center gap-3 text-xs text-zinc-500 flex-wrap">
-                  <span>Playlist: <span className="text-zinc-300">{schedule.playlist_name}</span></span>
-                  {schedule.system_action && <span className="badge bg-sky-500/15 text-sky-300">System</span>}
-                  {schedule.group_name && <span>Group: <span className="text-zinc-300">{schedule.group_name}</span></span>}
-                  {schedule.device_name && <span>Device: <span className="text-zinc-300">{schedule.device_name}</span></span>}
-                  {(schedule.start_time || schedule.end_time) && (
-                    <span className="flex items-center gap-1">
-                      <Clock size={10} />
-                      {schedule.start_time || '00:00'} - {schedule.end_time || '24:00'}
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2">
+                    <p className="text-sm font-semibold text-zinc-200 truncate">{schedule.name}</p>
+                    <span className={`badge ${schedule.is_active ? 'bg-emerald-500/15 text-emerald-400' : 'bg-zinc-500/15 text-zinc-400'}`}>
+                      {schedule.is_active ? 'Active' : 'Paused'}
                     </span>
-                  )}
+                  </div>
+                  <p className="text-xs text-zinc-500 truncate">
+                    {schedule.system_action === 'display_off' ? 'TV Off' : schedule.playlist_name} · {schedule.group_name || schedule.device_name}
+                  </p>
+                  <p className="text-xs text-zinc-600 mt-1">{getScheduleTimeLabel(schedule)}</p>
                 </div>
-                <div className="flex items-center gap-3 text-xs text-zinc-600 mt-1.5 flex-wrap">
-                  {(schedule.start_date || schedule.end_date) && (
-                    <span>
-                      {schedule.start_date || 'Any date'} to {schedule.end_date || 'ongoing'}
-                    </span>
-                  )}
+                <div className="flex items-center gap-1">
+                  <button onClick={() => openEdit(schedule)} className="btn-ghost text-xs p-2">
+                    <Edit3 size={13} />
+                  </button>
+                  <button onClick={() => toggleActive(schedule)} className="btn-ghost text-xs p-2">
+                    <Power size={13} className={schedule.is_active ? 'text-emerald-400' : 'text-zinc-500'} />
+                  </button>
+                  <button onClick={() => handleDelete(schedule.id)} className="btn-ghost text-xs p-2 text-red-400 hover:text-red-300">
+                    <Trash2 size={13} />
+                  </button>
                 </div>
-                <div className="flex gap-1 mt-2">
-                  {dayLabels.map((label, i) => {
-                    const active = schedule.days_of_week.split(',').includes(i.toString());
-                    return (
-                      <span
-                        key={i}
-                        className={`w-7 h-5 rounded text-[10px] font-medium flex items-center justify-center ${active ? 'bg-accent/15 text-accent' : 'bg-surface-overlay text-zinc-600'}`}
-                      >
-                        {label}
-                      </span>
-                    );
-                  })}
-                </div>
-              </div>
-              <div className="flex items-center gap-1 shrink-0">
-                <button onClick={() => openEdit(schedule)} className="btn-ghost text-xs p-2">
-                  <Edit3 size={14} />
-                </button>
-                <button onClick={() => toggleActive(schedule)} className="btn-ghost text-xs p-2">
-                  <Power size={14} className={schedule.is_active ? 'text-emerald-400' : 'text-zinc-500'} />
-                </button>
-                <button onClick={() => handleDelete(schedule.id)} className="btn-ghost text-xs p-2 text-red-400 hover:text-red-300">
-                  <Trash2 size={14} />
-                </button>
               </div>
             </div>
           ))}
@@ -297,12 +430,12 @@ export default function Schedules() {
               <option value="">Select playlist...</option>
               {playlists.map((playlist) => (
                 <option key={playlist.id} value={playlist.id}>
-                  {playlist.name}{playlist.is_system ? ' (System)' : ''}
+                  {isTvOffPlaylist(playlist) ? 'TV Off - turn display off' : playlist.name}
                 </option>
               ))}
             </select>
           </div>
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid sm:grid-cols-2 gap-3">
             <div>
               <label className="block text-xs font-medium text-zinc-400 mb-1.5">Target Group</label>
               <select
@@ -326,14 +459,23 @@ export default function Schedules() {
               </select>
             </div>
           </div>
-          <div className="grid grid-cols-2 gap-3">
+          <label className="flex items-center gap-2 text-sm text-zinc-300">
+            <input
+              type="checkbox"
+              checked={form.all_day}
+              onChange={(e) => setForm((current) => ({ ...current, all_day: e.target.checked }))}
+            />
+            All day schedule
+          </label>
+          <div className="grid sm:grid-cols-2 gap-3">
             <div>
               <label className="block text-xs font-medium text-zinc-400 mb-1.5">Start Time</label>
               <input
                 type="time"
                 value={form.start_time}
+                disabled={form.all_day}
                 onChange={(e) => setForm((current) => ({ ...current, start_time: e.target.value }))}
-                className="w-full"
+                className="w-full disabled:opacity-50"
               />
             </div>
             <div>
@@ -341,12 +483,13 @@ export default function Schedules() {
               <input
                 type="time"
                 value={form.end_time}
+                disabled={form.all_day}
                 onChange={(e) => setForm((current) => ({ ...current, end_time: e.target.value }))}
-                className="w-full"
+                className="w-full disabled:opacity-50"
               />
             </div>
           </div>
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid sm:grid-cols-2 gap-3">
             <div>
               <label className="block text-xs font-medium text-zinc-400 mb-1.5">Start Date</label>
               <input
@@ -368,7 +511,7 @@ export default function Schedules() {
           </div>
           <div>
             <label className="block text-xs font-medium text-zinc-400 mb-1.5">Active Days</label>
-            <div className="flex gap-1.5">
+            <div className="flex flex-wrap gap-1.5">
               {dayLabels.map((label, i) => {
                 const active = form.days_of_week.split(',').includes(i.toString());
                 return (
@@ -385,7 +528,7 @@ export default function Schedules() {
             </div>
           </div>
           <div>
-            <label className="block text-xs font-medium text-zinc-400 mb-1.5">Priority (higher = takes precedence)</label>
+            <label className="block text-xs font-medium text-zinc-400 mb-1.5">Priority</label>
             <input
               type="number"
               value={form.priority}
