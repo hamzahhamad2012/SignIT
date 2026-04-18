@@ -27,7 +27,7 @@ echo ""
 echo "[1/6] Updating system packages..."
 apt-get update -qq
 apt-get install -y -qq python3 python3-pip python3-venv chromium-browser \
-  xdotool scrot wlr-randr unclutter xserver-xorg x11-xserver-utils xinit > /dev/null 2>&1
+  xdotool scrot wlr-randr unclutter xserver-xorg x11-xserver-utils xinit mpv > /dev/null 2>&1
 
 echo "[2/6] Creating installation directory..."
 mkdir -p "$SIGNIT_DIR"

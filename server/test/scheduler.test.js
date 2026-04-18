@@ -327,7 +327,7 @@ test('core API smoke test covers auth, content, devices, schedules, and player r
 
   const playerManifest = await request('/api/setup/player-manifest');
   assert.equal(playerManifest.ok, true);
-  assert.equal(playerManifest.data.version, '1.4.0');
+  assert.equal(playerManifest.data.version, '1.5.0');
   assert.ok(playerManifest.data.files.includes('player.py'));
 
   const login = await request('/api/auth/login', {
@@ -431,6 +431,19 @@ test('core API smoke test covers auth, content, devices, schedules, and player r
   assert.equal(folderedAssets.data.assets.length, 1);
   assert.equal(folderedAssets.data.assets[0].folder_name, 'Lobby Media');
 
+  const cameraAsset = await request('/api/assets', {
+    method: 'POST',
+    headers: authHeaders,
+    body: JSON.stringify({
+      name: 'Back Door Camera',
+      type: 'url',
+      url: 'rtsps://192.168.1.55:7441/HG9tPS2MSICVmXWE?enableSrtp',
+    }),
+  });
+  assert.equal(cameraAsset.ok, true);
+  assert.equal(cameraAsset.data.asset.type, 'stream');
+  assert.equal(cameraAsset.data.asset.metadata.playback, 'native-player');
+
   const fallbackPlaylist = await request('/api/playlists', {
     method: 'POST',
     headers: authHeaders,
@@ -513,7 +526,7 @@ test('core API smoke test covers auth, content, devices, schedules, and player r
     headers: { Authorization: authHeaders.Authorization },
   });
   assert.equal(deviceDetail.ok, true);
-  assert.equal(deviceDetail.data.device.latest_player_version, '1.4.0');
+  assert.equal(deviceDetail.data.device.latest_player_version, '1.5.0');
   assert.equal(deviceDetail.data.device.needs_player_update, true);
 
   const updatePlayers = await request('/api/devices/update-player', {
@@ -522,7 +535,7 @@ test('core API smoke test covers auth, content, devices, schedules, and player r
     body: JSON.stringify({ device_ids: [deviceId] }),
   });
   assert.equal(updatePlayers.ok, true);
-  assert.equal(updatePlayers.data.latest_player_version, '1.4.0');
+  assert.equal(updatePlayers.data.latest_player_version, '1.5.0');
   assert.equal(updatePlayers.data.sent.length, 0);
   assert.equal(updatePlayers.data.queued.length, 1);
   assert.equal(updatePlayers.data.queued[0].id, deviceId);

@@ -23,7 +23,7 @@ Core capabilities:
 
 - Manage Raspberry Pi displays from a real-time dashboard.
 - Upload and organize media into folders.
-- Build playlists from images, videos, HTML, URLs, streams, widgets, and templates.
+- Build playlists from images, videos, HTML, web URLs, RTSP/RTSPS camera streams, widgets, and templates.
 - Schedule playlists by day, time window, display, or group.
 - Assign displays to groups and bulk-deploy content.
 - Rotate displays between landscape, flipped landscape, portrait-right, and portrait-left.
@@ -267,7 +267,7 @@ Active: active (running)
 It should also show JSON for the player manifest:
 
 ```json
-{"version":"1.4.0","files":["player.py","config.py","setup_server.py","setup_tui.py","requirements.txt","setup_ui/index.html"]}
+{"version":"1.5.0","files":["player.py","config.py","setup_server.py","setup_tui.py","requirements.txt","setup_ui/index.html"]}
 ```
 
 The exact version changes over time. The important part is that it is JSON and includes `player.py`. If this returns HTML, the server is not serving the API route correctly.
@@ -394,6 +394,7 @@ How it works:
 - Admins and editors can update all outdated Pis from the Displays page.
 - Online Pis receive the update command immediately.
 - Offline Pis are queued and receive the update the next time they reconnect.
+- Player version `1.5.0` and newer includes native RTSP/RTSPS camera playback through `mpv`.
 
 Important bootstrap note:
 

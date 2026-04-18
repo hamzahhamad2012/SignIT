@@ -16,6 +16,8 @@ import threading
 import http.server
 import functools
 import shutil
+import html
+import urllib.parse
 from pathlib import Path
 from datetime import datetime
 
@@ -26,7 +28,7 @@ import psutil
 from config import load_config, save_config, CACHE_DIR, LOG_DIR
 
 CONTENT_SERVER_PORT = 8889
-PLAYER_VERSION = '1.4.0'
+PLAYER_VERSION = '1.5.0'
 UPDATE_FILES = {
     'player.py',
     'config.py',
@@ -61,6 +63,9 @@ class SignITPlayer:
         self.running = True
         self.current_playlist = None
         self.chromium_proc = None
+        self.stream_proc = None
+        self.active_stream_url = None
+        self.stream_dependency_checked = False
         self.rotation_fallback = False
         self.update_in_progress = False
         self.sio = socketio.Client(reconnection=True, reconnection_delay=5)
@@ -230,6 +235,7 @@ class SignITPlayer:
 
             if not playlist:
                 log.info('No playlist assigned')
+                self._stop_stream_player()
                 self._show_standby()
                 return
 
@@ -238,6 +244,7 @@ class SignITPlayer:
 
             if playlist_hash == current_hash:
                 if playlist.get('system_action') == 'display_off':
+                    self._stop_stream_player()
                     self._set_display_power('off')
                     return
                 self._ensure_chromium_alive()
@@ -247,11 +254,13 @@ class SignITPlayer:
             self.current_playlist = playlist
 
             if playlist.get('system_action') == 'display_off':
+                self._stop_stream_player()
                 self._show_power_message('Display is scheduled off')
                 self._set_display_power('off')
                 return
 
             self._set_display_power('on')
+            self._stop_stream_player()
             self._download_assets(playlist.get('items', []))
             self._generate_display_html(playlist)
             self._launch_chromium()
@@ -452,6 +461,109 @@ class SignITPlayer:
         while self.running:
             time.sleep(10)
             self._ensure_chromium_alive()
+            self._ensure_stream_player_alive()
+
+    def _is_rtsp_stream(self, url):
+        return str(url or '').strip().lower().startswith(('rtsp://', 'rtsps://'))
+
+    def _find_stream_player(self):
+        for candidate in ('/usr/bin/mpv', '/usr/local/bin/mpv', 'mpv'):
+            resolved = candidate if os.path.isabs(candidate) else shutil.which(candidate)
+            if resolved and os.path.exists(resolved):
+                return resolved
+        return None
+
+    def _ensure_stream_player_package(self):
+        if self._find_stream_player():
+            return True
+        if self.stream_dependency_checked:
+            return False
+
+        self.stream_dependency_checked = True
+        if os.geteuid() == 0:
+            commands = [
+                ['apt-get', 'update', '-qq'],
+                ['apt-get', 'install', '-y', '-qq', 'mpv'],
+            ]
+        else:
+            commands = [
+                ['sudo', '-n', 'apt-get', 'update', '-qq'],
+                ['sudo', '-n', 'apt-get', 'install', '-y', '-qq', 'mpv'],
+            ]
+
+        try:
+            log.info('mpv is missing; attempting one-time install for RTSP/RTSPS playback')
+            for command in commands:
+                subprocess.run(command, check=True, timeout=300, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception as e:
+            log.warning(f'Could not auto-install mpv: {e}')
+
+        return self._find_stream_player() is not None
+
+    def _start_stream_player(self, url):
+        """Play RTSP/RTSPS camera feeds outside Chromium because browsers do not handle them."""
+        url = str(url or '').strip()
+        if not self._is_rtsp_stream(url):
+            log.warning(f'Refusing unsupported stream URL: {url}')
+            return False
+
+        if self.active_stream_url == url and self.stream_proc and self.stream_proc.poll() is None:
+            return True
+
+        self._stop_stream_player()
+        player_cmd = self._find_stream_player()
+        if not player_cmd and self._ensure_stream_player_package():
+            player_cmd = self._find_stream_player()
+        if not player_cmd:
+            log.error('mpv is not installed; cannot play RTSP/RTSPS stream')
+            return False
+
+        env = os.environ.copy()
+        env.setdefault('DISPLAY', ':0')
+        cmd = [
+            player_cmd,
+            '--fs',
+            '--ontop',
+            '--no-border',
+            '--no-osc',
+            '--no-terminal',
+            '--really-quiet',
+            '--force-window=yes',
+            '--profile=low-latency',
+            '--demuxer-lavf-o=rtsp_transport=tcp',
+            '--hwdec=auto-safe',
+            url,
+        ]
+
+        try:
+            log.info(f'Starting camera stream via mpv: {url}')
+            self.stream_proc = subprocess.Popen(cmd, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            self.active_stream_url = url
+            return True
+        except Exception as e:
+            log.error(f'Could not start stream player: {e}')
+            self.stream_proc = None
+            self.active_stream_url = None
+            return False
+
+    def _stop_stream_player(self):
+        if self.stream_proc and self.stream_proc.poll() is None:
+            log.info('Stopping camera stream')
+            self.stream_proc.terminate()
+            try:
+                self.stream_proc.wait(timeout=5)
+            except Exception:
+                self.stream_proc.kill()
+        self.stream_proc = None
+        self.active_stream_url = None
+
+    def _ensure_stream_player_alive(self):
+        if self.active_stream_url and self.stream_proc and self.stream_proc.poll() is not None:
+            url = self.active_stream_url
+            log.warning('Camera stream player exited; restarting')
+            self.stream_proc = None
+            self.active_stream_url = None
+            self._start_stream_player(url)
 
     def _download_assets(self, items):
         """Download and cache all assets needed for the playlist."""
@@ -518,9 +630,13 @@ class SignITPlayer:
             elif asset_type == 'video':
                 filename = item.get('filename', '')
                 slides_html += f'''<div class="slide" data-duration="{int(vid_dur)}" data-type="video" style="display:{visible}"><video src="{filename}" {muted} autoplay playsinline preload="auto" {loop_attr} style="object-fit:{fit};width:100%;height:100%;"></video></div>'''
+            elif asset_type == 'stream' and self._is_rtsp_stream(item.get('url', '')):
+                url = html.escape(item.get('url', ''), quote=True)
+                slides_html += f'''<div class="slide stream-slide" data-duration="{item.get('duration', 30)}" data-stream-url="{url}" style="display:{visible}"><div class="stream-card"><div class="stream-dot"></div><h1>Camera Stream</h1><p>Connecting to RTSP feed...</p></div></div>'''
             elif asset_type in ('url', 'stream'):
                 url = item.get('url', '')
-                slides_html += f'''<div class="slide" data-duration="{item.get('duration', 30)}" style="display:{visible}"><iframe src="{url}" style="width:100%;height:100%;border:none;"></iframe></div>'''
+                safe_url = html.escape(url, quote=True)
+                slides_html += f'''<div class="slide" data-duration="{item.get('duration', 30)}" style="display:{visible}"><iframe src="{safe_url}" style="width:100%;height:100%;border:none;"></iframe></div>'''
             elif asset_type in ('html', 'widget'):
                 filename = item.get('filename', '')
                 slides_html += f'''<div class="slide" data-duration="{item.get('duration', 30)}" style="display:{visible}"><iframe src="{filename}" style="width:100%;height:100%;border:none;"></iframe></div>'''
@@ -534,6 +650,11 @@ html,body{{width:100%;height:100%;overflow:hidden;background:{bg_color}}}
 {player_css}
 .slide{{position:absolute;top:0;left:0;width:100%;height:100%}}
 .slide img,.slide video,.slide iframe{{display:block;width:100%;height:100%}}
+.stream-slide{{background:#020617;color:#fff;font-family:system-ui,-apple-system,sans-serif}}
+.stream-card{{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);display:flex;flex-direction:column;align-items:center;gap:10px;padding:28px 34px;border-radius:24px;background:rgba(15,23,42,.74);border:1px solid rgba(148,163,184,.2);box-shadow:0 24px 80px rgba(0,0,0,.45)}}
+.stream-card h1{{font-size:24px;font-weight:700}}
+.stream-card p{{color:#94a3b8;font-size:14px}}
+.stream-dot{{width:13px;height:13px;border-radius:999px;background:#22c55e;box-shadow:0 0 0 8px rgba(34,197,94,.14),0 0 30px rgba(34,197,94,.8)}}
 </style>
 </head><body>
 <div id="player">{slides_html}</div>
@@ -543,6 +664,18 @@ html,body{{width:100%;height:100%;overflow:hidden;background:{bg_color}}}
   if(!slides||slides.length<1)return;
   var current=0;
   var count=slides.length;
+  var activeStreamUrl=null;
+  function controlStream(url){{
+    if(url===activeStreamUrl)return;
+    if(activeStreamUrl){{
+      fetch('/__signit/stream/stop').catch(function(){{}});
+      activeStreamUrl=null;
+    }}
+    if(url){{
+      activeStreamUrl=url;
+      fetch('/__signit/stream/start?url='+encodeURIComponent(url)).catch(function(){{}});
+    }}
+  }}
   function showSlide(idx){{
     for(var i=0;i<count;i++){{
       slides[i].style.display=(i===idx)?'block':'none';
@@ -552,7 +685,9 @@ html,body{{width:100%;height:100%;overflow:hidden;background:{bg_color}}}
         else{{v.pause();}}
       }}
     }}
+    controlStream(slides[idx].getAttribute('data-stream-url')||null);
   }}
+  window.addEventListener('beforeunload',function(){{controlStream(null);}});
   if(count<2){{showSlide(0);return;}}
   var durations=[];
   for(var i=0;i<count;i++){{
@@ -922,6 +1057,8 @@ html,body{{width:100%;height:100%;overflow:hidden;background:{bg_color}}}
                     timeout=180,
                 )
 
+            self._ensure_stream_player_package()
+
             self._emit_player_status(
                 update_status='success',
                 player_version=latest_version,
@@ -959,12 +1096,31 @@ html,body{{width:100%;height:100%;overflow:hidden;background:{bg_color}}}
     def _start_content_server(self):
         """Start a local HTTP server with range-request support for video playback."""
         serve_dir = CACHE_DIR
+        player = self
 
         class RangeHTTPHandler(http.server.SimpleHTTPRequestHandler):
             def __init__(self, *args, **kwargs):
                 super().__init__(*args, directory=serve_dir, **kwargs)
 
+            def _send_json(self, status, payload):
+                encoded = json.dumps(payload).encode('utf-8')
+                self.send_response(status)
+                self.send_header('Content-Type', 'application/json')
+                self.send_header('Content-Length', str(len(encoded)))
+                self.send_header('Cache-Control', 'no-cache')
+                self.end_headers()
+                self.wfile.write(encoded)
+
             def do_GET(self):
+                parsed = urllib.parse.urlparse(self.path)
+                if parsed.path == '/__signit/stream/start':
+                    url = urllib.parse.parse_qs(parsed.query).get('url', [''])[0]
+                    ok = player._start_stream_player(url)
+                    return self._send_json(200 if ok else 422, {'success': ok})
+                if parsed.path == '/__signit/stream/stop':
+                    player._stop_stream_player()
+                    return self._send_json(200, {'success': True})
+
                 path = self.translate_path(self.path)
                 if not os.path.isfile(path):
                     return super().do_GET()
@@ -1083,6 +1239,7 @@ html,body{{width:100%;height:100%;overflow:hidden;background:{bg_color}}}
             self.running = False
             if self.chromium_proc:
                 self.chromium_proc.terminate()
+            self._stop_stream_player()
             if self.sio.connected:
                 self.sio.disconnect()
             sys.exit(0)

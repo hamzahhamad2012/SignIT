@@ -382,7 +382,7 @@ install_deps() {
   apt-get update -qq > /dev/null 2>&1
   apt-get install -y -qq python3 python3-pip python3-venv chromium-browser \\
     xdotool scrot wlr-randr unclutter xserver-xorg x11-xserver-utils xinit \\
-    libatlas-base-dev > /dev/null 2>&1
+    libatlas-base-dev mpv > /dev/null 2>&1
   echo -e "  \${GREEN}Done\${NC}"
 }
 
@@ -729,7 +729,7 @@ echo "[2/7] Installing system packages..."
 apt-get update -qq
 apt-get install -y -qq python3 python3-pip python3-venv chromium-browser \\
   xdotool scrot wlr-randr unclutter xserver-xorg x11-xserver-utils xinit \\
-  libatlas-base-dev lightdm 2>/dev/null || true
+  libatlas-base-dev lightdm mpv 2>/dev/null || true
 echo "  Done"
 
 # ─── 3. Copy player files ───

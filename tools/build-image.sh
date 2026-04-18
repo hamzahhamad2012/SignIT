@@ -117,7 +117,7 @@ apt-get -f install -y 2>/dev/null || true
 
 echo ">>> Installing extras…"
 apt-get install -y --no-install-recommends \
-  python3-venv scrot xdotool wlr-randr unclutter-xfixes 2>&1 || true
+  python3-venv scrot xdotool wlr-randr unclutter-xfixes mpv 2>&1 || true
 
 # Verify desktop packages (already in Pi OS Desktop image)
 for pkg in chromium lightdm python3; do

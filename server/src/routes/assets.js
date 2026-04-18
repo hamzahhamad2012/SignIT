@@ -73,6 +73,50 @@ function normalizeAsset(asset) {
   return asset;
 }
 
+function normalizeUrlAsset(type, rawUrl) {
+  const url = String(rawUrl || '').trim();
+  if (!url) {
+    const error = new Error('URL is required');
+    error.status = 400;
+    throw error;
+  }
+
+  let parsed;
+  try {
+    parsed = new URL(url);
+  } catch {
+    const error = new Error('Enter a valid URL');
+    error.status = 400;
+    throw error;
+  }
+
+  const protocol = parsed.protocol.toLowerCase();
+  const isRtsp = protocol === 'rtsp:' || protocol === 'rtsps:';
+  const isWeb = protocol === 'http:' || protocol === 'https:';
+  const normalizedType = isRtsp ? 'stream' : type === 'stream' ? 'stream' : 'url';
+
+  if (normalizedType === 'url' && !isWeb) {
+    const error = new Error('Web page assets must use http:// or https://');
+    error.status = 400;
+    throw error;
+  }
+
+  if (normalizedType === 'stream' && !isWeb && !isRtsp) {
+    const error = new Error('Live stream assets must use http://, https://, rtsp://, or rtsps://');
+    error.status = 400;
+    throw error;
+  }
+
+  return {
+    type: normalizedType,
+    url,
+    metadata: {
+      stream_protocol: isRtsp ? protocol.replace(':', '') : null,
+      playback: isRtsp ? 'native-player' : 'browser',
+    },
+  };
+}
+
 async function generateThumbnail(filepath, filename) {
   try {
     const thumbName = `thumb_${filename.replace(extname(filename), '.jpg')}`;
@@ -259,9 +303,10 @@ router.post('/', upload.single('file'), async (req, res) => {
     const folderId = normalizeFolderId(req.body.folder_id);
 
     if (assetType === 'url' || assetType === 'stream') {
+      const normalized = normalizeUrlAsset(assetType, url);
       const result = db.prepare(`
-        INSERT INTO assets (name, type, folder_id, url) VALUES (?, ?, ?, ?)
-      `).run(name || url, assetType, folderId, url);
+        INSERT INTO assets (name, type, folder_id, url, metadata) VALUES (?, ?, ?, ?, ?)
+      `).run(name || normalized.url, normalized.type, folderId, normalized.url, JSON.stringify(normalized.metadata));
       const asset = normalizeAsset(db.prepare('SELECT * FROM assets WHERE id = ?').get(result.lastInsertRowid));
       logActivity(db, {
         userId: req.user.id,

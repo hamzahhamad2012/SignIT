@@ -17,6 +17,8 @@ const typeColors = {
   html: 'text-pink-400', widget: 'text-violet-400', stream: 'text-cyan-400',
 };
 
+const isRtspUrl = (value) => /^rtsps?:\/\//i.test(String(value || '').trim());
+
 function formatBytes(bytes) {
   if (!bytes) return '—';
   const k = 1024;
@@ -99,7 +101,7 @@ export default function Assets() {
         ...urlForm,
         folder_id: selectedFolder !== 'all' && selectedFolder !== 'unfiled' ? selectedFolder : null,
       });
-      toast.success('URL added');
+      toast.success(urlForm.type === 'stream' || isRtspUrl(urlForm.url) ? 'Live stream added' : 'URL added');
       setShowUrl(false);
       setUrlForm({ name: '', type: 'url', url: '' });
       fetchAssets();
@@ -204,7 +206,7 @@ export default function Assets() {
             <FolderPlus size={15} /> New Folder
           </button>
           <button onClick={() => setShowUrl(true)} className="btn-secondary">
-            <LinkIcon size={15} /> Add URL
+            <LinkIcon size={15} /> Add URL / Stream
           </button>
           <button onClick={() => setShowUpload(true)} className="btn-primary">
             <Upload size={15} /> Upload
@@ -258,7 +260,7 @@ export default function Assets() {
                 onChange={(e) => setSearch(e.target.value)} className="w-full pl-9" />
             </div>
             <div className="flex gap-1.5 flex-wrap">
-              {['', 'image', 'video', 'url', 'html', 'widget'].map((t) => (
+              {['', 'image', 'video', 'url', 'stream', 'html', 'widget'].map((t) => (
                 <button key={t} onClick={() => setFilterType(t)}
                   className={`btn text-xs px-3 py-1.5 capitalize ${filterType === t
                     ? 'bg-accent/15 text-accent border border-accent/30'
@@ -394,7 +396,7 @@ export default function Assets() {
         )}
       </Modal>
 
-      <Modal open={showUrl} onClose={() => setShowUrl(false)} title="Add URL Asset">
+      <Modal open={showUrl} onClose={() => setShowUrl(false)} title="Add URL or Live Stream">
         <div className="space-y-3">
           <p className="text-xs text-zinc-500">Target: <span className="text-zinc-300">{selectedFolderLabel}</span></p>
           <div>
@@ -406,13 +408,20 @@ export default function Assets() {
             <label className="block text-xs font-medium text-zinc-400 mb-1.5">Type</label>
             <select value={urlForm.type} onChange={(e) => setUrlForm(f => ({ ...f, type: e.target.value }))} className="w-full">
               <option value="url">Web Page</option>
-              <option value="stream">Live Stream</option>
+              <option value="stream">Live Stream / Camera</option>
             </select>
+            <p className="text-[11px] text-zinc-600 mt-1">RTSP and RTSPS links are saved as Live Stream assets automatically.</p>
           </div>
           <div>
             <label className="block text-xs font-medium text-zinc-400 mb-1.5">URL</label>
-            <input type="url" value={urlForm.url} onChange={(e) => setUrlForm(f => ({ ...f, url: e.target.value }))}
-              placeholder="https://..." className="w-full" />
+            <input type="text" value={urlForm.url} onChange={(e) => {
+              const value = e.target.value;
+              setUrlForm(f => ({ ...f, url: value, type: isRtspUrl(value) ? 'stream' : f.type }));
+            }}
+              placeholder="https://example.com or rtsps://192.168.1.55:7441/..." className="w-full" />
+            <p className="text-[11px] text-zinc-600 mt-1">
+              Browser pages use Chromium. RTSP/RTSPS camera feeds play on the Pi through the native stream player.
+            </p>
           </div>
           <div className="flex gap-2 justify-end pt-2">
             <button onClick={() => setShowUrl(false)} className="btn-secondary">Cancel</button>
@@ -431,6 +440,9 @@ export default function Assets() {
             ) : preview.type === 'url' || preview.type === 'stream' ? (
               <div className="text-center">
                 <Globe size={48} className="mx-auto text-zinc-500 mb-3" />
+                {preview.type === 'stream' && isRtspUrl(preview.url) && (
+                  <p className="text-xs text-zinc-500 mb-2">RTSP/RTSPS streams preview on the Raspberry Pi player.</p>
+                )}
                 <a href={preview.url} target="_blank" rel="noopener noreferrer"
                   className="text-accent hover:text-accent-hover text-sm">{preview.url}</a>
               </div>
