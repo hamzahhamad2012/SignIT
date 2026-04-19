@@ -28,7 +28,8 @@ import psutil
 from config import load_config, save_config, CACHE_DIR, LOG_DIR
 
 CONTENT_SERVER_PORT = 8889
-PLAYER_VERSION = '1.5.1'
+PLAYER_VERSION = '1.5.2'
+STREAM_LOG_PATH = os.path.join(LOG_DIR, 'stream-player.log')
 UPDATE_FILES = {
     'player.py',
     'config.py',
@@ -64,6 +65,8 @@ class SignITPlayer:
         self.current_playlist = None
         self.chromium_proc = None
         self.stream_proc = None
+        self.stream_log_file = None
+        self.stream_player_kind = None
         self.active_stream_url = None
         self.stream_dependency_checked = False
         self.rotation_fallback = False
@@ -466,39 +469,125 @@ class SignITPlayer:
     def _is_rtsp_stream(self, url):
         return str(url or '').strip().lower().startswith(('rtsp://', 'rtsps://'))
 
-    def _find_stream_player(self):
-        for candidate in ('/usr/bin/mpv', '/usr/local/bin/mpv', 'mpv'):
+    def _find_executable(self, candidates):
+        for candidate in candidates:
             resolved = candidate if os.path.isabs(candidate) else shutil.which(candidate)
             if resolved and os.path.exists(resolved):
                 return resolved
         return None
 
+    def _find_ffplay(self):
+        return self._find_executable(('/usr/bin/ffplay', '/usr/local/bin/ffplay', 'ffplay'))
+
+    def _find_mpv(self):
+        return self._find_executable(('/usr/bin/mpv', '/usr/local/bin/mpv', 'mpv'))
+
+    def _find_stream_player(self):
+        ffplay = self._find_ffplay()
+        if ffplay:
+            return 'ffplay', ffplay
+
+        mpv = self._find_mpv()
+        if mpv:
+            return 'mpv', mpv
+
+        return None
+
     def _ensure_stream_player_package(self):
-        if self._find_stream_player():
+        if self._find_ffplay():
             return True
         if self.stream_dependency_checked:
-            return False
+            return self._find_stream_player() is not None
 
         self.stream_dependency_checked = True
         if os.geteuid() == 0:
             commands = [
                 ['apt-get', 'update', '-qq'],
-                ['apt-get', 'install', '-y', '-qq', 'mpv'],
+                ['apt-get', 'install', '-y', '-qq', 'ffmpeg', 'mpv'],
             ]
         else:
             commands = [
                 ['sudo', '-n', 'apt-get', 'update', '-qq'],
-                ['sudo', '-n', 'apt-get', 'install', '-y', '-qq', 'mpv'],
+                ['sudo', '-n', 'apt-get', 'install', '-y', '-qq', 'ffmpeg', 'mpv'],
             ]
 
         try:
-            log.info('mpv is missing; attempting one-time install for RTSP/RTSPS playback')
+            log.info('stream player is missing; attempting one-time install for RTSP/RTSPS playback')
             for command in commands:
                 subprocess.run(command, check=True, timeout=300, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         except Exception as e:
-            log.warning(f'Could not auto-install mpv: {e}')
+            log.warning(f'Could not auto-install stream player packages: {e}')
 
         return self._find_stream_player() is not None
+
+    def _mask_stream_url(self, url):
+        try:
+            parsed = urllib.parse.urlparse(url)
+            token = parsed.path.strip('/')
+            masked_token = f'{token[:4]}...{token[-4:]}' if len(token) > 10 else 'stream'
+            netloc = parsed.netloc or 'camera'
+            return f'{parsed.scheme}://{netloc}/{masked_token}'
+        except Exception:
+            return 'RTSP stream'
+
+    def _tail_stream_log(self, max_chars=1800):
+        try:
+            if not os.path.exists(STREAM_LOG_PATH):
+                return ''
+            with open(STREAM_LOG_PATH, 'rb') as f:
+                f.seek(0, os.SEEK_END)
+                size = f.tell()
+                f.seek(max(0, size - max_chars))
+                return f.read().decode('utf-8', errors='replace').strip()
+        except Exception:
+            return ''
+
+    def _open_stream_log(self, kind, url):
+        os.makedirs(LOG_DIR, exist_ok=True)
+        stream_log = open(STREAM_LOG_PATH, 'a', buffering=1)
+        stream_log.write('\n')
+        stream_log.write('=' * 72 + '\n')
+        stream_log.write(f'{datetime.utcnow().isoformat()}Z starting {kind}: {self._mask_stream_url(url)}\n')
+        stream_log.write('=' * 72 + '\n')
+        return stream_log
+
+    def _stream_player_commands(self, url):
+        ffplay = self._find_ffplay()
+        if ffplay:
+            screen_w, screen_h = self._get_screen_resolution()
+            yield 'ffplay', [
+                ffplay,
+                '-hide_banner',
+                '-loglevel', 'warning',
+                '-rtsp_transport', 'tcp',
+                '-fflags', 'nobuffer',
+                '-flags', 'low_delay',
+                '-framedrop',
+                '-an',
+                '-fs',
+                '-noborder',
+                '-alwaysontop',
+                '-x', str(screen_w),
+                '-y', str(screen_h),
+                url,
+            ]
+
+        mpv = self._find_mpv()
+        if mpv:
+            yield 'mpv', [
+                mpv,
+                '--fs',
+                '--ontop',
+                '--no-border',
+                '--no-osc',
+                '--force-window=yes',
+                '--profile=low-latency',
+                '--demuxer-lavf-o=rtsp_transport=tcp',
+                '--hwdec=auto-safe',
+                '--no-audio',
+                '--msg-level=all=warn',
+                url,
+            ]
 
     def _start_stream_player(self, url):
         """Play RTSP/RTSPS camera feeds outside Chromium because browsers do not handle them."""
@@ -511,40 +600,60 @@ class SignITPlayer:
             return True
 
         self._stop_stream_player()
-        player_cmd = self._find_stream_player()
-        if not player_cmd and self._ensure_stream_player_package():
-            player_cmd = self._find_stream_player()
-        if not player_cmd:
-            log.error('mpv is not installed; cannot play RTSP/RTSPS stream')
+        if not self._find_stream_player():
+            self._ensure_stream_player_package()
+        if not self._find_stream_player():
+            log.error('No stream player is installed; cannot play RTSP/RTSPS stream')
+            self._emit_player_status(stream_status='failed', stream_error='missing_stream_player')
             return False
 
         env = os.environ.copy()
         env.setdefault('DISPLAY', ':0')
-        cmd = [
-            player_cmd,
-            '--fs',
-            '--ontop',
-            '--no-border',
-            '--no-osc',
-            '--no-terminal',
-            '--really-quiet',
-            '--force-window=yes',
-            '--profile=low-latency',
-            '--demuxer-lavf-o=rtsp_transport=tcp',
-            '--hwdec=auto-safe',
-            url,
-        ]
+        env.setdefault('SDL_VIDEODRIVER', 'x11')
+        masked_url = self._mask_stream_url(url)
+        failures = []
 
-        try:
-            log.info(f'Starting camera stream via mpv: {url}')
-            self.stream_proc = subprocess.Popen(cmd, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            self.active_stream_url = url
-            return True
-        except Exception as e:
-            log.error(f'Could not start stream player: {e}')
-            self.stream_proc = None
-            self.active_stream_url = None
-            return False
+        for kind, cmd in self._stream_player_commands(url):
+            try:
+                log.info(f'Starting camera stream via {kind}: {masked_url}')
+                self.stream_log_file = self._open_stream_log(kind, url)
+                self.stream_proc = subprocess.Popen(
+                    cmd,
+                    env=env,
+                    stdout=self.stream_log_file,
+                    stderr=self.stream_log_file,
+                )
+                time.sleep(2)
+
+                if self.stream_proc.poll() is None:
+                    self.active_stream_url = url
+                    self.stream_player_kind = kind
+                    self._emit_player_status(stream_status='playing', stream_player=kind)
+                    return True
+
+                exit_code = self.stream_proc.returncode
+                tail = self._tail_stream_log()
+                failures.append(f'{kind} exited with code {exit_code}: {tail[-500:]}')
+                log.warning(f'{kind} could not hold RTSP stream open (exit {exit_code}). Trying fallback if available.')
+                self.stream_proc = None
+                self.stream_player_kind = None
+                if self.stream_log_file:
+                    self.stream_log_file.close()
+                    self.stream_log_file = None
+            except Exception as e:
+                failures.append(f'{kind}: {e}')
+                log.error(f'Could not start stream player {kind}: {e}')
+                self.stream_proc = None
+                self.stream_player_kind = None
+                if self.stream_log_file:
+                    self.stream_log_file.close()
+                    self.stream_log_file = None
+
+        error = '; '.join(failures) or 'unknown stream player failure'
+        log.error(f'Camera stream failed: {error}')
+        self._emit_player_status(stream_status='failed', stream_error=error[-900:])
+        self.active_stream_url = None
+        return False
 
     def _stop_stream_player(self):
         if self.stream_proc and self.stream_proc.poll() is None:
@@ -555,13 +664,22 @@ class SignITPlayer:
             except Exception:
                 self.stream_proc.kill()
         self.stream_proc = None
+        self.stream_player_kind = None
+        if self.stream_log_file:
+            self.stream_log_file.close()
+            self.stream_log_file = None
         self.active_stream_url = None
 
     def _ensure_stream_player_alive(self):
         if self.active_stream_url and self.stream_proc and self.stream_proc.poll() is not None:
             url = self.active_stream_url
-            log.warning('Camera stream player exited; restarting')
+            tail = self._tail_stream_log()
+            log.warning(f'Camera stream player exited; restarting. Last stream output: {tail[-500:]}')
             self.stream_proc = None
+            self.stream_player_kind = None
+            if self.stream_log_file:
+                self.stream_log_file.close()
+                self.stream_log_file = None
             self.active_stream_url = None
             self._start_stream_player(url)
 
