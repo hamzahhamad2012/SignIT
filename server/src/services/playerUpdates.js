@@ -2,6 +2,24 @@ import { isPlayerOutdated } from './playerVersion.js';
 
 const ACTIVE_STATUSES = new Set(['queued', 'sent', 'checking', 'downloading', 'installing']);
 const COMPLETE_STATUSES = new Set(['success', 'failed', 'current']);
+const FALLBACK_PROGRESS_BY_STATUS = {
+  queued: 0,
+  sent: 1,
+  checking: 5,
+  downloading: 35,
+  installing: 85,
+  failed: null,
+};
+const FALLBACK_MESSAGE_BY_STATUS = {
+  queued: 'Queued until the Pi receives the update command',
+  sent: 'Update command sent to Pi',
+  checking: 'Checking latest player version',
+  downloading: 'Downloading player update',
+  installing: 'Installing player update',
+  current: 'Player already current',
+  success: 'Update installed',
+  failed: 'Update failed',
+};
 
 function normalizeStatus(status) {
   if (!status) return null;
@@ -10,7 +28,9 @@ function normalizeStatus(status) {
 
 function normalizeProgress(progress, status) {
   if (status === 'success' || status === 'current') return 100;
-  if (progress === undefined || progress === null || progress === '') return null;
+  if (progress === undefined || progress === null || progress === '') {
+    return FALLBACK_PROGRESS_BY_STATUS[status] ?? null;
+  }
 
   const parsed = Number.parseInt(progress, 10);
   if (!Number.isFinite(parsed)) return null;
@@ -24,6 +44,10 @@ function normalizeEta(etaSeconds, status) {
   const parsed = Number.parseInt(etaSeconds, 10);
   if (!Number.isFinite(parsed) || parsed < 0) return null;
   return parsed;
+}
+
+function fallbackMessage(status) {
+  return FALLBACK_MESSAGE_BY_STATUS[status] || null;
 }
 
 export function queuePlayerUpdate(db, {
@@ -100,7 +124,7 @@ export function updatePlayerJobStatus(db, deviceId, data = {}) {
   const lastError = data.update_error || null;
   const progress = normalizeProgress(data.update_progress, status);
   const etaSeconds = normalizeEta(data.update_eta_seconds, status);
-  const message = data.update_message || null;
+  const message = data.update_message || fallbackMessage(status);
   const completedAtSql = COMPLETE_STATUSES.has(status) ? 'CURRENT_TIMESTAMP' : 'NULL';
 
   db.prepare(`
