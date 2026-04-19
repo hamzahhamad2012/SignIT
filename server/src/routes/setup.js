@@ -578,9 +578,27 @@ router.get('/player-file/setup_ui/:filename', (req, res) => {
 });
 
 router.get('/player-manifest', (req, res) => {
+  const fileSizes = {};
+  let totalSize = 0;
+
+  PLAYER_UPDATE_FILES.forEach((relativePath) => {
+    const filepath = relativePath.startsWith('setup_ui/')
+      ? join(PLAYER_DIR, relativePath)
+      : join(PLAYER_DIR, relativePath);
+    try {
+      const size = statSync(filepath).size;
+      fileSizes[relativePath] = size;
+      totalSize += size;
+    } catch {
+      fileSizes[relativePath] = null;
+    }
+  });
+
   res.json({
     version: getLatestPlayerVersion(),
     files: PLAYER_UPDATE_FILES,
+    file_sizes: fileSizes,
+    total_size: totalSize,
   });
 });
 

@@ -36,6 +36,40 @@ function isTvOffPlaylist(playlist) {
   return playlist?.system_action === 'display_off' || playlist?.name === 'TV_OFF';
 }
 
+function activePlayerUpdateStatus(status) {
+  return status && !['success', 'current'].includes(status);
+}
+
+function clampProgress(value) {
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed)) return 0;
+  return Math.max(0, Math.min(100, parsed));
+}
+
+function formatEta(seconds) {
+  const parsed = Number.parseInt(seconds, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) return null;
+  if (parsed < 60) return `${parsed}s`;
+  const mins = Math.floor(parsed / 60);
+  const secs = parsed % 60;
+  if (mins < 60) return secs ? `${mins}m ${secs}s` : `${mins}m`;
+  const hours = Math.floor(mins / 60);
+  const rem = mins % 60;
+  return rem ? `${hours}h ${rem}m` : `${hours}h`;
+}
+
+function getUpdateLabel(status) {
+  const labels = {
+    queued: 'Queued',
+    sent: 'Sent',
+    checking: 'Checking update',
+    downloading: 'Downloading update',
+    installing: 'Installing update',
+    failed: 'Update failed',
+  };
+  return labels[status] || status;
+}
+
 export default function DeviceDetail() {
   const { id } = useParams();
   const navigate = useNavigate();
@@ -106,7 +140,21 @@ export default function DeviceDetail() {
 
     unsubs.push(on('device:player_status', (data) => {
       if (String(data.deviceId) === String(id)) {
-        setDevice(prev => prev ? { ...prev, ...data } : prev);
+        setDevice(prev => prev ? {
+          ...prev,
+          ...data,
+          player_update_status: data.update_status || prev.player_update_status,
+          player_update_progress: data.update_progress ?? prev.player_update_progress,
+          player_update_eta_seconds: data.update_eta_seconds ?? prev.player_update_eta_seconds,
+          player_update_message: data.update_message || prev.player_update_message,
+          player_update_error: data.update_error || prev.player_update_error,
+          player_update_target_version: data.latest_player_version || prev.player_update_target_version,
+          player_version: data.player_version || prev.player_version,
+          latest_player_version: data.latest_player_version || prev.latest_player_version,
+          needs_player_update: data.update_status === 'success' || data.update_status === 'current'
+            ? false
+            : prev.needs_player_update,
+        } : prev);
         if (data.update_status === 'success') {
           setPendingCmd(null);
           toast.success('Player update installed. Restarting display player...');
@@ -181,6 +229,7 @@ export default function DeviceDetail() {
         pollForScreenshot(device?.screenshot || null);
       } else if (command === 'update_player') {
         toast.success(result.queued ? 'Player update queued until this Pi reconnects' : 'Player update command sent');
+        api.get(`/devices/${id}`).then(d => setDevice(d.device)).catch(() => {});
         if (result.queued) setPendingCmd(null);
       } else {
         setTimeout(() => setPendingCmd(prev => prev === command ? null : prev), 3000);
@@ -293,6 +342,9 @@ export default function DeviceDetail() {
     { label: 'Disk', value: device.disk_usage != null ? `${Number(device.disk_usage).toFixed(0)}%` : '—', icon: HardDrive, color: 'text-pink-400' },
   ];
   const currentDisplayRotation = device.display_rotation || (device.orientation === 'portrait' ? 'portrait-right' : 'landscape');
+  const updateActive = activePlayerUpdateStatus(device.player_update_status) || pendingCmd === 'update_player';
+  const updateProgress = clampProgress(device.player_update_progress);
+  const updateEta = formatEta(device.player_update_eta_seconds);
 
   return (
     <div className="space-y-5">
@@ -625,25 +677,52 @@ export default function DeviceDetail() {
                   ) : (
                     <p className="text-xs text-emerald-400">Player is current.</p>
                   )}
-                  {device.player_update_status && !['success', 'current'].includes(device.player_update_status) && (
-                    <p className="text-xs text-sky-400">
-                      Update {device.player_update_status}
-                      {device.player_update_target_version ? ` to ${device.player_update_target_version}` : ''}
-                    </p>
+                  {updateActive && (
+                    <div className="rounded-xl border border-sky-500/20 bg-sky-500/10 p-3">
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="min-w-0">
+                          <p className="text-xs font-semibold text-sky-300">
+                            {getUpdateLabel(device.player_update_status || 'sent')}
+                            {device.player_update_target_version ? ` to ${device.player_update_target_version}` : ''}
+                          </p>
+                          <p className="text-[11px] text-sky-200/75 truncate mt-0.5">
+                            {device.player_update_message || 'Waiting for progress from the Pi'}
+                          </p>
+                        </div>
+                        <span className="text-sm font-mono text-sky-100">{updateProgress}%</span>
+                      </div>
+                      <div className="mt-2 h-2 rounded-full bg-sky-950/70 overflow-hidden">
+                        <div
+                          className="h-full rounded-full bg-sky-400 transition-all"
+                          style={{ width: `${updateProgress}%` }}
+                        />
+                      </div>
+                      <div className="mt-1.5 flex items-center justify-between gap-2 text-[11px] text-sky-200/70">
+                        <span className="truncate">{device.player_update_error || 'Progress is reported live by the player updater.'}</span>
+                        {updateEta && <span className="shrink-0">ETA {updateEta}</span>}
+                      </div>
+                    </div>
                   )}
-                  <button
-                    onClick={() => sendCommand('update_player')}
-                    disabled={!!pendingCmd}
-                    className="btn-primary w-full text-xs disabled:opacity-50"
-                  >
-                    {pendingCmd === 'update_player' ? (
-                      <Loader2 size={13} className="animate-spin" />
-                    ) : (
+                  {device.needs_player_update && !updateActive && (
+                    <button
+                      onClick={() => sendCommand('update_player')}
+                      disabled={!!pendingCmd}
+                      className="btn-primary w-full text-xs disabled:opacity-50"
+                    >
                       <Download size={13} />
-                    )}
-                    {pendingCmd === 'update_player' ? 'Updating...' : 'Update Player'}
-                  </button>
-                  {device.status !== 'online' && (
+                      Update Player
+                    </button>
+                  )}
+                  {!device.needs_player_update && !updateActive && (
+                    <p className="text-[11px] text-zinc-600">Update button hidden because this Pi is already on the latest version.</p>
+                  )}
+                  {updateActive && pendingCmd === 'update_player' && (
+                    <div className="flex items-center justify-center gap-2 text-xs text-sky-300">
+                      <Loader2 size={13} className="animate-spin" />
+                      Updating...
+                    </div>
+                  )}
+                  {device.status !== 'online' && device.needs_player_update && (
                     <p className="text-[11px] text-zinc-600">Offline updates are queued and sent when the Pi reconnects.</p>
                   )}
                 </div>

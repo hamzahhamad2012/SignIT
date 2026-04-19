@@ -8,6 +8,24 @@ function normalizeStatus(status) {
   return String(status).replace(/[^a-z_]/gi, '').toLowerCase();
 }
 
+function normalizeProgress(progress, status) {
+  if (status === 'success' || status === 'current') return 100;
+  if (progress === undefined || progress === null || progress === '') return null;
+
+  const parsed = Number.parseInt(progress, 10);
+  if (!Number.isFinite(parsed)) return null;
+  return Math.max(0, Math.min(100, parsed));
+}
+
+function normalizeEta(etaSeconds, status) {
+  if (status === 'success' || status === 'current') return 0;
+  if (etaSeconds === undefined || etaSeconds === null || etaSeconds === '') return null;
+
+  const parsed = Number.parseInt(etaSeconds, 10);
+  if (!Number.isFinite(parsed) || parsed < 0) return null;
+  return parsed;
+}
+
 export function queuePlayerUpdate(db, {
   deviceId,
   targetVersion,
@@ -15,13 +33,16 @@ export function queuePlayerUpdate(db, {
   requestedBy = null,
 }) {
   db.prepare(`
-    INSERT INTO player_update_jobs (device_id, target_version, force, requested_by, status, requested_at, sent_at, completed_at, last_error)
-    VALUES (?, ?, ?, ?, 'queued', CURRENT_TIMESTAMP, NULL, NULL, NULL)
+    INSERT INTO player_update_jobs (device_id, target_version, force, requested_by, status, progress, eta_seconds, message, requested_at, sent_at, completed_at, last_error)
+    VALUES (?, ?, ?, ?, 'queued', 0, NULL, 'Queued until the Pi receives the update command', CURRENT_TIMESTAMP, NULL, NULL, NULL)
     ON CONFLICT(device_id) DO UPDATE SET
       target_version = excluded.target_version,
       force = excluded.force,
       requested_by = excluded.requested_by,
       status = 'queued',
+      progress = 0,
+      eta_seconds = NULL,
+      message = 'Queued until the Pi receives the update command',
       requested_at = CURRENT_TIMESTAMP,
       sent_at = NULL,
       completed_at = NULL,
@@ -44,7 +65,8 @@ export function sendQueuedPlayerUpdate(io, db, deviceId) {
   if (!job.force && !isPlayerOutdated(device.player_version, job.target_version)) {
     db.prepare(`
       UPDATE player_update_jobs
-      SET status = 'current', completed_at = CURRENT_TIMESTAMP, last_error = NULL
+      SET status = 'current', progress = 100, eta_seconds = 0, message = 'Player already current',
+          completed_at = CURRENT_TIMESTAMP, last_error = NULL
       WHERE device_id = ?
     `).run(deviceId);
     return false;
@@ -60,7 +82,8 @@ export function sendQueuedPlayerUpdate(io, db, deviceId) {
 
   db.prepare(`
     UPDATE player_update_jobs
-    SET status = 'sent', sent_at = CURRENT_TIMESTAMP, last_error = NULL
+    SET status = 'sent', progress = 1, eta_seconds = NULL, message = 'Update command sent to Pi',
+        sent_at = CURRENT_TIMESTAMP, last_error = NULL
     WHERE device_id = ?
   `).run(deviceId);
 
@@ -75,6 +98,9 @@ export function updatePlayerJobStatus(db, deviceId, data = {}) {
 
   const latestVersion = data.latest_player_version || data.player_version || null;
   const lastError = data.update_error || null;
+  const progress = normalizeProgress(data.update_progress, status);
+  const etaSeconds = normalizeEta(data.update_eta_seconds, status);
+  const message = data.update_message || null;
   const completedAtSql = COMPLETE_STATUSES.has(status) ? 'CURRENT_TIMESTAMP' : 'NULL';
 
   db.prepare(`
@@ -82,10 +108,13 @@ export function updatePlayerJobStatus(db, deviceId, data = {}) {
     SET
       status = ?,
       target_version = COALESCE(?, target_version),
+      progress = COALESCE(?, progress),
+      eta_seconds = ?,
+      message = COALESCE(?, message),
       completed_at = ${completedAtSql},
       last_error = ?
     WHERE device_id = ?
-  `).run(status, latestVersion, lastError, deviceId);
+  `).run(status, latestVersion, progress, etaSeconds, message, lastError, deviceId);
 
   if ((status === 'success' || status === 'current') && latestVersion) {
     db.prepare('UPDATE devices SET player_version = ? WHERE id = ?').run(latestVersion, deviceId);

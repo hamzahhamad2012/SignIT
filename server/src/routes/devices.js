@@ -44,6 +44,9 @@ router.get('/', authenticateToken, (req, res) => {
       END as playlist_source,
       pu.status as player_update_status,
       pu.target_version as player_update_target_version,
+      pu.progress as player_update_progress,
+      pu.eta_seconds as player_update_eta_seconds,
+      pu.message as player_update_message,
       pu.last_error as player_update_error
     FROM devices d
     LEFT JOIN groups g ON g.id = d.group_id
@@ -176,6 +179,9 @@ router.get('/:id', authenticateToken, (req, res) => {
       END as playlist_source,
       pu.status as player_update_status,
       pu.target_version as player_update_target_version,
+      pu.progress as player_update_progress,
+      pu.eta_seconds as player_update_eta_seconds,
+      pu.message as player_update_message,
       pu.last_error as player_update_error
     FROM devices d
     LEFT JOIN groups g ON g.id = d.group_id

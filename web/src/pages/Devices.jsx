@@ -27,6 +27,32 @@ function activePlayerUpdateStatus(status) {
   return status && !['success', 'current'].includes(status);
 }
 
+function clampProgress(value) {
+  const parsed = Number.parseInt(value, 10);
+  if (!Number.isFinite(parsed)) return 0;
+  return Math.max(0, Math.min(100, parsed));
+}
+
+function formatEta(seconds) {
+  const parsed = Number.parseInt(seconds, 10);
+  if (!Number.isFinite(parsed) || parsed <= 0) return null;
+  if (parsed < 60) return `${parsed}s left`;
+  const mins = Math.ceil(parsed / 60);
+  return `${mins}m left`;
+}
+
+function getUpdateLabel(status) {
+  const labels = {
+    queued: 'Queued',
+    sent: 'Sent',
+    checking: 'Checking',
+    downloading: 'Downloading',
+    installing: 'Installing',
+    failed: 'Failed',
+  };
+  return labels[status] || status;
+}
+
 function getPlaylistState(device) {
   const source = device.playlist_source
     || (device.current_playlist_name ? 'current'
@@ -82,7 +108,8 @@ export default function Devices() {
     const unsub1 = on('device:status', fetchDevices);
     const unsub2 = on('device:heartbeat', fetchDevices);
     const unsub3 = on('device:playlist', fetchDevices);
-    return () => { unsub1(); unsub2(); unsub3(); };
+    const unsub4 = on('device:player_status', fetchDevices);
+    return () => { unsub1(); unsub2(); unsub3(); unsub4(); };
   }, [on]);
 
   const outdatedCount = devices.filter((device) => device.needs_player_update).length;
@@ -199,9 +226,24 @@ export default function Devices() {
                 </div>
               )}
               {activePlayerUpdateStatus(device.player_update_status) && (
-                <div className="mb-3 rounded-lg border border-sky-500/20 bg-sky-500/10 px-2.5 py-1.5 text-xs text-sky-300">
-                  Player update {device.player_update_status}
-                  {device.player_update_target_version ? ` to ${device.player_update_target_version}` : ''}
+                <div className="mb-3 rounded-lg border border-sky-500/20 bg-sky-500/10 px-2.5 py-2 text-xs text-sky-300">
+                  <div className="flex items-center justify-between gap-2">
+                    <span>
+                      Player update {getUpdateLabel(device.player_update_status)}
+                      {device.player_update_target_version ? ` to ${device.player_update_target_version}` : ''}
+                    </span>
+                    <span className="font-mono">{clampProgress(device.player_update_progress)}%</span>
+                  </div>
+                  <div className="mt-1.5 h-1.5 rounded-full bg-sky-950/70 overflow-hidden">
+                    <div
+                      className="h-full rounded-full bg-sky-400 transition-all"
+                      style={{ width: `${clampProgress(device.player_update_progress)}%` }}
+                    />
+                  </div>
+                  <div className="mt-1 flex items-center justify-between gap-2 text-[11px] text-sky-200/80">
+                    <span className="truncate">{device.player_update_message || 'Update in progress'}</span>
+                    {formatEta(device.player_update_eta_seconds) && <span>{formatEta(device.player_update_eta_seconds)}</span>}
+                  </div>
                 </div>
               )}
 

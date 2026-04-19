@@ -73,6 +73,9 @@ function applyMigrations() {
       target_version TEXT NOT NULL,
       force BOOLEAN DEFAULT 0,
       status TEXT DEFAULT 'queued' CHECK(status IN ('queued','sent','checking','downloading','installing','success','failed','current')),
+      progress INTEGER DEFAULT 0,
+      eta_seconds INTEGER,
+      message TEXT,
       requested_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
       requested_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       sent_at DATETIME,
@@ -80,6 +83,18 @@ function applyMigrations() {
       last_error TEXT
     )
   `).run();
+
+  if (!hasColumn('player_update_jobs', 'progress')) {
+    db.prepare('ALTER TABLE player_update_jobs ADD COLUMN progress INTEGER DEFAULT 0').run();
+  }
+
+  if (!hasColumn('player_update_jobs', 'eta_seconds')) {
+    db.prepare('ALTER TABLE player_update_jobs ADD COLUMN eta_seconds INTEGER').run();
+  }
+
+  if (!hasColumn('player_update_jobs', 'message')) {
+    db.prepare('ALTER TABLE player_update_jobs ADD COLUMN message TEXT').run();
+  }
 
   db.prepare('CREATE INDEX IF NOT EXISTS idx_users_status ON users(status)').run();
   db.prepare('CREATE INDEX IF NOT EXISTS idx_user_device_permissions_user ON user_device_permissions(user_id)').run();

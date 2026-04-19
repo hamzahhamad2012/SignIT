@@ -28,7 +28,7 @@ import psutil
 from config import load_config, save_config, CACHE_DIR, LOG_DIR
 
 CONTENT_SERVER_PORT = 8889
-PLAYER_VERSION = '1.5.2'
+PLAYER_VERSION = '1.5.3'
 STREAM_LOG_PATH = os.path.join(LOG_DIR, 'stream-player.log')
 UPDATE_FILES = {
     'player.py',
@@ -71,6 +71,7 @@ class SignITPlayer:
         self.stream_dependency_checked = False
         self.rotation_fallback = False
         self.update_in_progress = False
+        self.last_update_progress = 0
         self.sio = socketio.Client(reconnection=True, reconnection_delay=5)
         self._setup_socket()
 
@@ -1099,7 +1100,33 @@ html,body{{width:100%;height:100%;overflow:hidden;background:{bg_color}}}
         if self.sio.connected:
             self.sio.emit('player:status', payload)
 
-    def _download_update_file(self, relative_path, update_dir):
+    def _format_bytes(self, value):
+        try:
+            value = float(value or 0)
+        except Exception:
+            value = 0
+        units = ['B', 'KB', 'MB', 'GB']
+        for unit in units:
+            if value < 1024 or unit == units[-1]:
+                return f'{value:.1f} {unit}' if unit != 'B' else f'{int(value)} B'
+            value /= 1024
+        return f'{int(value)} B'
+
+    def _emit_update_progress(self, status, progress, message, latest_version=None, eta_seconds=None):
+        self.last_update_progress = max(0, min(100, int(progress)))
+        payload = {
+            'update_status': status,
+            'update_progress': self.last_update_progress,
+            'update_message': message,
+            'player_version': PLAYER_VERSION,
+        }
+        if latest_version:
+            payload['latest_player_version'] = latest_version
+        if eta_seconds is not None:
+            payload['update_eta_seconds'] = max(0, int(eta_seconds))
+        self._emit_player_status(**payload)
+
+    def _download_update_file(self, relative_path, update_dir, progress_callback=None):
         if relative_path not in UPDATE_FILES or '..' in relative_path:
             raise RuntimeError(f'Unsafe update file path: {relative_path}')
 
@@ -1107,10 +1134,15 @@ html,body{{width:100%;height:100%;overflow:hidden;background:{bg_color}}}
         target = os.path.join(update_dir, relative_path)
         os.makedirs(os.path.dirname(target), exist_ok=True)
 
-        response = requests.get(url, timeout=60)
+        response = requests.get(url, timeout=60, stream=True)
         response.raise_for_status()
         with open(target, 'wb') as f:
-            f.write(response.content)
+            for chunk in response.iter_content(chunk_size=64 * 1024):
+                if not chunk:
+                    continue
+                f.write(chunk)
+                if progress_callback:
+                    progress_callback(len(chunk))
         return target
 
     def _update_player(self, params=None):
@@ -1125,41 +1157,77 @@ html,body{{width:100%;height:100%;overflow:hidden;background:{bg_color}}}
         update_dir = '/opt/signit/.update'
 
         try:
-            self._emit_player_status(update_status='checking', player_version=PLAYER_VERSION)
+            self._emit_update_progress('checking', 3, 'Checking latest player version')
             manifest = self._api_get('/api/setup/player-manifest')
             latest_version = manifest.get('version') or params.get('version') or 'unknown'
             files = manifest.get('files') or sorted(UPDATE_FILES)
             files = [path for path in files if path in UPDATE_FILES]
+            file_sizes = manifest.get('file_sizes') or {}
+            total_size = int(manifest.get('total_size') or 0)
+            if total_size <= 0:
+                total_size = sum(int(file_sizes.get(path) or 0) for path in files)
 
             if not force and latest_version != 'unknown' and latest_version == PLAYER_VERSION:
                 log.info(f'Player already current: v{PLAYER_VERSION}')
-                self._emit_player_status(
-                    update_status='current',
-                    player_version=PLAYER_VERSION,
-                    latest_player_version=latest_version,
-                )
+                self._emit_update_progress('current', 100, 'Player already current', latest_version, eta_seconds=0)
                 return
 
             log.info(f'Updating SignIT player from v{PLAYER_VERSION} to v{latest_version}')
-            self._emit_player_status(
-                update_status='downloading',
-                player_version=PLAYER_VERSION,
-                latest_player_version=latest_version,
-            )
+            self._emit_update_progress('downloading', 10, 'Preparing download', latest_version)
 
             if os.path.exists(update_dir):
                 shutil.rmtree(update_dir)
             os.makedirs(update_dir, exist_ok=True)
 
+            started_at = time.time()
+            downloaded_bytes = 0
+            downloaded_files = 0
+
+            def progress_for_chunk(relative_path, chunk_size):
+                nonlocal downloaded_bytes
+                downloaded_bytes += chunk_size
+                elapsed = max(time.time() - started_at, 0.5)
+                if total_size > 0:
+                    ratio = min(1.0, downloaded_bytes / total_size)
+                    progress = 10 + int(ratio * 60)
+                    remaining = max(total_size - downloaded_bytes, 0)
+                    rate = downloaded_bytes / elapsed if downloaded_bytes > 0 else 0
+                    eta = int(remaining / rate) if rate > 0 and remaining > 0 else 0
+                    message = (
+                        f'Downloading {relative_path} '
+                        f'({self._format_bytes(downloaded_bytes)} / {self._format_bytes(total_size)})'
+                    )
+                else:
+                    ratio = min(1.0, (downloaded_files + 0.5) / max(len(files), 1))
+                    progress = 10 + int(ratio * 60)
+                    eta = None
+                    message = f'Downloading {relative_path}'
+                self._emit_update_progress('downloading', progress, message, latest_version, eta)
+
             for relative_path in files:
-                self._download_update_file(relative_path, update_dir)
+                progress_for_chunk(relative_path, 0)
+                self._download_update_file(
+                    relative_path,
+                    update_dir,
+                    progress_callback=lambda chunk_size, path=relative_path: progress_for_chunk(path, chunk_size),
+                )
+                downloaded_files += 1
+
+            self._emit_update_progress('installing', 72, 'Verifying update package', latest_version)
 
             required = os.path.join(update_dir, 'player.py')
             if not os.path.exists(required):
                 raise RuntimeError('Update package did not include player.py')
 
-            self._emit_player_status(update_status='installing', latest_player_version=latest_version)
-            for relative_path in files:
+            for index, relative_path in enumerate(files):
+                install_progress = 75 + int(((index + 1) / max(len(files), 1)) * 10)
+                self._emit_update_progress(
+                    'installing',
+                    install_progress,
+                    f'Installing {relative_path}',
+                    latest_version,
+                    eta_seconds=max(len(files) - index - 1, 0),
+                )
                 source = os.path.join(update_dir, relative_path)
                 destination = os.path.join('/opt/signit', relative_path)
                 if not os.path.exists(source):
@@ -1169,29 +1237,24 @@ html,body{{width:100%;height:100%;overflow:hidden;background:{bg_color}}}
 
             requirements = '/opt/signit/requirements.txt'
             if os.path.exists(requirements):
+                self._emit_update_progress('installing', 88, 'Installing Python dependencies', latest_version)
                 subprocess.run(
                     [sys.executable, '-m', 'pip', 'install', '-q', '-r', requirements],
                     check=True,
                     timeout=180,
                 )
 
+            self._emit_update_progress('installing', 94, 'Ensuring stream playback packages', latest_version)
             self._ensure_stream_player_package()
 
-            self._emit_player_status(
-                update_status='success',
-                player_version=latest_version,
-                latest_player_version=latest_version,
-            )
+            self._emit_update_progress('success', 100, 'Update installed. Restarting player...', latest_version, eta_seconds=0)
             log.info('Player update complete; restarting into updated code')
             time.sleep(1)
             self._restart_player()
         except Exception as e:
             log.error(f'Player update failed: {e}')
-            self._emit_player_status(
-                update_status='failed',
-                update_error=str(e),
-                player_version=PLAYER_VERSION,
-            )
+            self._emit_update_progress('failed', self.last_update_progress, 'Update failed', params.get('version'), eta_seconds=0)
+            self._emit_player_status(update_status='failed', update_error=str(e), player_version=PLAYER_VERSION)
         finally:
             self.update_in_progress = False
 
