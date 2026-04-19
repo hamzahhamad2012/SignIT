@@ -7,9 +7,10 @@ import toast from 'react-hot-toast';
 import {
   ArrowLeft, Save, Plus, Trash2, GripVertical, Image, Film,
   Globe, Code, Clock, Monitor, Rocket, Settings2, Play, Folder,
+  Video,
 } from 'lucide-react';
 
-const typeIcons = { image: Image, video: Film, url: Globe, html: Code, widget: Code, stream: Globe };
+const typeIcons = { image: Image, video: Film, url: Globe, html: Code, widget: Code, stream: Video };
 const isRtspUrl = (value) => /^rtsps?:\/\//i.test(String(value || '').trim());
 const getEffectiveType = (item) => isRtspUrl(item?.url) ? 'stream' : item?.asset_type || item?.type;
 
@@ -103,6 +104,13 @@ export default function PlaylistEditor() {
     setHasChanges(true);
   };
 
+  const updateItemSettings = (idx, updates) => {
+    setItems(prev => prev.map((item, i) => i === idx
+      ? { ...item, settings: { ...(item.settings || {}), ...updates } }
+      : item));
+    setHasChanges(true);
+  };
+
   const handleDragStart = (idx) => setDragIdx(idx);
   const handleDragOver = (e, idx) => {
     e.preventDefault();
@@ -139,7 +147,12 @@ export default function PlaylistEditor() {
     return null;
   };
 
+  const isStreamPlaylist = playlist?.playlist_type === 'stream';
+  const compatibleDevices = devices.filter(d => (d.player_mode || 'media') === (playlist?.playlist_type || 'media'));
   const visibleAssets = assets.filter((asset) => {
+    const effectiveType = isRtspUrl(asset.url) ? 'stream' : asset.type;
+    if (isStreamPlaylist && effectiveType !== 'stream') return false;
+    if (!isStreamPlaylist && effectiveType === 'stream') return false;
     if (assetFolderFilter === 'all') return true;
     if (assetFolderFilter === 'unfiled') return !asset.folder_id;
     return String(asset.folder_id) === String(assetFolderFilter);
@@ -155,8 +168,15 @@ export default function PlaylistEditor() {
             <ArrowLeft size={18} />
           </Link>
           <div>
-            <h1 className="text-2xl font-bold text-zinc-100">{playlist.name}</h1>
-            <p className="text-sm text-zinc-500">{items.length} items &middot; {playlist.layout} &middot; {playlist.transition}</p>
+            <div className="flex items-center gap-2">
+              <h1 className="text-2xl font-bold text-zinc-100">{playlist.name}</h1>
+              <span className={`badge ${isStreamPlaylist ? 'bg-cyan-500/15 text-cyan-300' : 'bg-violet-500/15 text-violet-300'}`}>
+                {isStreamPlaylist ? 'Camera Wall' : 'Media Playlist'}
+              </span>
+            </div>
+            <p className="text-sm text-zinc-500">
+              {items.length} {isStreamPlaylist ? 'camera' : 'item'}{items.length !== 1 && 's'} &middot; {isStreamPlaylist ? 'live grid' : `${playlist.layout} · ${playlist.transition}`}
+            </p>
           </div>
         </div>
         <div className="flex gap-2">
@@ -172,17 +192,17 @@ export default function PlaylistEditor() {
       <div className="grid lg:grid-cols-3 gap-4">
         <div className="lg:col-span-2 card">
           <div className="flex items-center justify-between mb-4">
-            <h2 className="text-sm font-semibold text-zinc-200">Playlist Items</h2>
+            <h2 className="text-sm font-semibold text-zinc-200">{isStreamPlaylist ? 'Camera Streams' : 'Playlist Items'}</h2>
             <button onClick={() => setShowAddAsset(true)} className="btn-primary text-xs">
-              <Plus size={14} /> Add Content
+              <Plus size={14} /> {isStreamPlaylist ? 'Add Camera' : 'Add Content'}
             </button>
           </div>
 
           {items.length === 0 ? (
             <div className="py-12 text-center">
-              <p className="text-sm text-zinc-500 mb-3">No content added yet</p>
+              <p className="text-sm text-zinc-500 mb-3">{isStreamPlaylist ? 'No cameras added yet' : 'No content added yet'}</p>
               <button onClick={() => setShowAddAsset(true)} className="btn-secondary text-xs">
-                <Plus size={14} /> Add your first item
+                <Plus size={14} /> {isStreamPlaylist ? 'Add your first camera' : 'Add your first item'}
               </button>
             </div>
           ) : (
@@ -217,10 +237,39 @@ export default function PlaylistEditor() {
 
                     <div className="flex-1 min-w-0">
                       <p className="text-sm font-medium text-zinc-300 truncate">{item.asset_name}</p>
-                      <p className="text-xs text-zinc-500 capitalize">{effectiveType}</p>
+                      <p className="text-xs text-zinc-500 capitalize">
+                        {isStreamPlaylist ? `Tile ${idx + 1}` : effectiveType}
+                      </p>
                     </div>
 
                     <div className="flex items-center gap-2 shrink-0">
+                      {isStreamPlaylist ? (
+                        <>
+                          <label className="flex items-center gap-1 text-xs text-zinc-500">
+                            W
+                            <input
+                              type="number"
+                              value={item.settings?.col_span || 1}
+                              onChange={(e) => updateItemSettings(idx, { col_span: Math.max(1, parseInt(e.target.value) || 1) })}
+                              className="w-12 text-xs text-center py-1 px-1"
+                              min={1}
+                              max={6}
+                            />
+                          </label>
+                          <label className="flex items-center gap-1 text-xs text-zinc-500">
+                            H
+                            <input
+                              type="number"
+                              value={item.settings?.row_span || 1}
+                              onChange={(e) => updateItemSettings(idx, { row_span: Math.max(1, parseInt(e.target.value) || 1) })}
+                              className="w-12 text-xs text-center py-1 px-1"
+                              min={1}
+                              max={6}
+                            />
+                          </label>
+                        </>
+                      ) : (
+                        <>
                       <div className="flex items-center gap-1">
                         <Clock size={12} className="text-zinc-500" />
                         <input
@@ -238,6 +287,8 @@ export default function PlaylistEditor() {
                         <option value="contain">Contain</option>
                         <option value="fill">Fill</option>
                       </select>
+                        </>
+                      )}
                       <button onClick={() => removeItem(idx)} className="p-1.5 rounded-lg hover:bg-red-500/10 text-zinc-500 hover:text-red-400">
                         <Trash2 size={14} />
                       </button>
@@ -260,6 +311,8 @@ export default function PlaylistEditor() {
               transition={playlist.transition}
               transitionDuration={playlist.transition_duration}
               bgColor={playlist.bg_color}
+              playlistType={playlist.playlist_type}
+              layoutConfig={playlist.layout_config || {}}
             />
           </div>
 
@@ -279,17 +332,19 @@ export default function PlaylistEditor() {
         </div>
       </div>
 
-      <Modal open={showAddAsset} onClose={() => setShowAddAsset(false)} title="Add Content" wide>
+      <Modal open={showAddAsset} onClose={() => setShowAddAsset(false)} title={isStreamPlaylist ? 'Add Cameras' : 'Add Content'} wide>
         <div className="flex items-center gap-2 mb-3">
           <Folder size={14} className="text-zinc-500" />
           <select value={assetFolderFilter} onChange={(e) => setAssetFolderFilter(e.target.value)} className="text-xs py-1.5">
-            <option value="all">All media</option>
+            <option value="all">{isStreamPlaylist ? 'All cameras' : 'All media'}</option>
             <option value="unfiled">Unfiled</option>
             {assetFolders.map(folder => <option key={folder.id} value={folder.id}>{folder.name}</option>)}
           </select>
         </div>
         {visibleAssets.length === 0 ? (
-          <p className="text-sm text-zinc-500 py-8 text-center">No assets available. Upload content first.</p>
+          <p className="text-sm text-zinc-500 py-8 text-center">
+            {isStreamPlaylist ? 'No live stream assets available. Add RTSP/RTSPS cameras on the Assets page first.' : 'No assets available. Upload content first.'}
+          </p>
         ) : (
           <div className="grid grid-cols-2 sm:grid-cols-3 gap-2 max-h-[50vh] overflow-y-auto">
             {visibleAssets.map(asset => {
@@ -308,7 +363,7 @@ export default function PlaylistEditor() {
                     )}
                   </div>
                   <p className="text-xs font-medium text-zinc-300 truncate">{asset.name}</p>
-                  <p className="text-[10px] text-zinc-500 capitalize">{effectiveType}</p>
+                <p className="text-[10px] text-zinc-500 capitalize">{effectiveType === 'stream' ? 'Live Stream / Camera' : effectiveType}</p>
                   <p className="text-[10px] text-zinc-600 truncate">{asset.folder_name || 'Unfiled'}</p>
                 </button>
               );
@@ -319,6 +374,11 @@ export default function PlaylistEditor() {
 
       <Modal open={showDeploy} onClose={() => setShowDeploy(false)} title="Deploy Playlist">
         <div className="space-y-4">
+          <div className={`rounded-xl border p-3 text-xs ${isStreamPlaylist ? 'border-cyan-500/20 bg-cyan-500/10 text-cyan-100' : 'border-violet-500/20 bg-violet-500/10 text-violet-100'}`}>
+            {isStreamPlaylist
+              ? 'This Camera Wall can only deploy to displays set to Camera Wall mode.'
+              : 'This Media Playlist can only deploy to displays set to Media Display mode.'}
+          </div>
           <div>
             <label className="block text-xs font-medium text-zinc-400 mb-2">Deploy to Group</label>
             <select value={deployGroup} onChange={(e) => setDeployGroup(e.target.value)} className="w-full">
@@ -329,7 +389,7 @@ export default function PlaylistEditor() {
           <div>
             <label className="block text-xs font-medium text-zinc-400 mb-2">Or select individual devices</label>
             <div className="space-y-1 max-h-48 overflow-y-auto">
-              {devices.map(d => (
+              {compatibleDevices.map(d => (
                 <label key={d.id} className="flex items-center gap-2 p-2 rounded-lg hover:bg-surface-hover cursor-pointer">
                   <input type="checkbox"
                     checked={selectedDevices.includes(d.id)}
@@ -340,8 +400,14 @@ export default function PlaylistEditor() {
                   />
                   <Monitor size={14} className="text-zinc-500" />
                   <span className="text-sm text-zinc-300">{d.name}</span>
+                  <span className="ml-auto text-[10px] text-zinc-600">{d.player_mode === 'stream' ? 'Camera Wall' : 'Media'}</span>
                 </label>
               ))}
+              {compatibleDevices.length === 0 && (
+                <p className="text-xs text-zinc-500 py-3 text-center">
+                  No compatible {isStreamPlaylist ? 'Camera Wall displays' : 'Media Displays'} found.
+                </p>
+              )}
             </div>
           </div>
           <div className="flex gap-2 justify-end pt-2">
@@ -368,6 +434,56 @@ export default function PlaylistEditor() {
               onBlur={(e) => handleUpdatePlaylist({ description: e.target.value })}
               className="w-full" rows={2} />
           </div>
+          {isStreamPlaylist ? (
+            <>
+              <div className="grid grid-cols-3 gap-3 rounded-xl border border-surface-border bg-surface-overlay p-3">
+                <div>
+                  <label className="block text-xs font-medium text-zinc-400 mb-1.5">Columns</label>
+                  <input
+                    type="number"
+                    min={1}
+                    max={6}
+                    defaultValue={playlist.layout_config?.columns || 2}
+                    onBlur={(e) => handleUpdatePlaylist({ layout_config: { ...(playlist.layout_config || {}), columns: parseInt(e.target.value) || 2 } })}
+                    className="w-full"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-zinc-400 mb-1.5">Rows</label>
+                  <input
+                    type="number"
+                    min={1}
+                    max={6}
+                    defaultValue={playlist.layout_config?.rows || 2}
+                    onBlur={(e) => handleUpdatePlaylist({ layout_config: { ...(playlist.layout_config || {}), rows: parseInt(e.target.value) || 2 } })}
+                    className="w-full"
+                  />
+                </div>
+                <div>
+                  <label className="block text-xs font-medium text-zinc-400 mb-1.5">Gap</label>
+                  <input
+                    type="number"
+                    min={0}
+                    max={40}
+                    defaultValue={playlist.layout_config?.gap ?? 8}
+                    onBlur={(e) => handleUpdatePlaylist({ layout_config: { ...(playlist.layout_config || {}), gap: parseInt(e.target.value) || 0 } })}
+                    className="w-full"
+                  />
+                </div>
+              </div>
+              <label className="flex items-center justify-between rounded-xl border border-surface-border bg-surface-overlay p-3 text-sm text-zinc-300">
+                Show camera labels on player
+                <input
+                  type="checkbox"
+                  defaultChecked={playlist.layout_config?.show_labels !== false}
+                  onChange={(e) => handleUpdatePlaylist({ layout_config: { ...(playlist.layout_config || {}), show_labels: e.target.checked } })}
+                />
+              </label>
+              <p className="text-xs text-zinc-500">
+                Drag cameras to change order. Use W/H on each row to make a camera span multiple grid cells.
+              </p>
+            </>
+          ) : (
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="block text-xs font-medium text-zinc-400 mb-1.5">Layout</label>
@@ -393,6 +509,7 @@ export default function PlaylistEditor() {
               </select>
             </div>
           </div>
+          )}
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="block text-xs font-medium text-zinc-400 mb-1.5">Transition Duration (ms)</label>

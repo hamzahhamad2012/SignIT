@@ -23,9 +23,11 @@ Core capabilities:
 
 - Manage Raspberry Pi displays from a real-time dashboard.
 - Upload and organize media into folders.
-- Build playlists from images, videos, HTML, web URLs, RTSP/RTSPS camera streams, widgets, and templates.
+- Build Media Playlists from images, videos, HTML, web URLs, widgets, and templates.
+- Build Camera Wall playlists from RTSP/RTSPS camera stream assets.
 - Schedule playlists by day, time window, display, or group.
 - Assign displays to groups and bulk-deploy content.
+- Designate each Raspberry Pi as either a Media Display or a Camera Wall display so incompatible playlists cannot be assigned by mistake.
 - Rotate displays between landscape, flipped landscape, portrait-right, and portrait-left.
 - Schedule the fixed `TV_OFF` system playlist to turn displays off cleanly.
 - Monitor player health, heartbeats, screenshots, system stats, and playback status.
@@ -35,6 +37,45 @@ Core capabilities:
 - Review compact user activity logs for logins and dashboard changes.
 - Keep audit activity automatically trimmed to 90 days.
 - Run over a raw Elastic IP now, with domain/HTTPS available later.
+
+---
+
+## Media Displays And Camera Walls
+
+SignIT separates normal signage from live camera playback on purpose:
+
+| Concept | Use It For | Playlist Rules | Player Behavior |
+| --- | --- | --- | --- |
+| Media Display | Standard digital signage | Media Playlists only | Chromium kiosk plays images, videos, URLs, widgets, and templates |
+| Camera Wall | Live security/camera displays | Camera Wall playlists only | Native `ffplay`/`mpv` windows tile RTSP/RTSPS streams across the screen |
+
+Camera streams start as assets:
+
+```text
+Assets -> Add URL -> paste rtsp:// or rtsps:// camera URL
+```
+
+Then build the wall:
+
+```text
+Playlists -> Camera Walls -> New Camera Wall
+```
+
+Inside a Camera Wall playlist:
+
+- add only Live Stream / Camera assets
+- drag cameras to change their order
+- set grid columns, rows, and gap
+- use each camera row's `W` and `H` controls to make a tile span multiple grid cells
+
+Then assign it only to Pis set as Camera Walls:
+
+```text
+Devices -> open Pi -> Player Role -> Camera Wall
+Playlists -> Camera Walls -> Deploy
+```
+
+This split keeps a normal marketing display from accidentally receiving a multi-camera RTSP wall, and keeps a camera wall from receiving a regular media playlist.
 
 ---
 
@@ -267,7 +308,7 @@ Active: active (running)
 It should also show JSON for the player manifest:
 
 ```json
-{"version":"1.5.6","files":["player.py","config.py","setup_server.py","setup_tui.py","requirements.txt","setup_ui/index.html"]}
+{"version":"1.6.0","files":["player.py","config.py","setup_server.py","setup_tui.py","requirements.txt","setup_ui/index.html"]}
 ```
 
 The exact version changes over time. The important part is that it is JSON and includes `player.py`. If this returns HTML, the server is not serving the API route correctly.
@@ -394,7 +435,7 @@ How it works:
 - Admins and editors can update all outdated Pis from the Displays page.
 - Online Pis receive the update command immediately.
 - Offline Pis are queued and receive the update the next time they reconnect.
-- Player version `1.5.6` and newer includes hardened RTSP/RTSPS camera playback plus OTA update progress. The player tries `ffplay` with TCP first, then falls back to `mpv`, writes stream diagnostics to `/opt/signit/logs/stream-player.log`, and reports update percent/ETA back to the dashboard.
+- Player version `1.6.0` and newer includes Camera Wall mode for tiled RTSP/RTSPS camera playback, hardened single-stream playback, and OTA update progress. The player tries `ffplay` with TCP first, then falls back to `mpv`, writes stream diagnostics to `/opt/signit/logs/stream-player.log`, and reports update percent/ETA back to the dashboard.
 
 Important bootstrap note:
 

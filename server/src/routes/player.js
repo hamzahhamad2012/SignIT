@@ -14,6 +14,7 @@ function getDevicePlayerConfig(device) {
   return {
     device_id: device.id,
     name: device.name,
+    player_mode: device.player_mode || 'media',
     orientation: device.orientation,
     display_rotation: rotation.value,
     display_rotation_degrees: rotation.degrees,

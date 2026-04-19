@@ -311,13 +311,19 @@ test('database migrations upgrade older production databases before migrated ind
     const assetColumns = migrated.prepare('PRAGMA table_info(assets)').all().map((column) => column.name);
     const activityColumns = migrated.prepare('PRAGMA table_info(activity_log)').all().map((column) => column.name);
     const widgetColumns = migrated.prepare('PRAGMA table_info(widgets)').all().map((column) => column.name);
+    const deviceColumns = migrated.prepare('PRAGMA table_info(devices)').all().map((column) => column.name);
+    const playlistColumns = migrated.prepare('PRAGMA table_info(playlists)').all().map((column) => column.name);
     const indexes = migrated.prepare("SELECT name FROM sqlite_master WHERE type = 'index'").all().map((index) => index.name);
 
     assert.ok(assetColumns.includes('folder_id'));
     assert.ok(activityColumns.includes('category'));
     assert.ok(widgetColumns.includes('asset_id'));
+    assert.ok(deviceColumns.includes('player_mode'));
+    assert.ok(playlistColumns.includes('playlist_type'));
     assert.ok(indexes.includes('idx_assets_folder'));
     assert.ok(indexes.includes('idx_activity_log_category'));
+    assert.ok(indexes.includes('idx_devices_player_mode'));
+    assert.ok(indexes.includes('idx_playlists_playlist_type'));
     const migratedCamera = migrated.prepare("SELECT type FROM assets WHERE name = 'Legacy RTSP Camera'").get();
     assert.equal(migratedCamera.type, 'stream');
   } finally {
@@ -333,7 +339,7 @@ test('core API smoke test covers auth, content, devices, schedules, and player r
 
   const playerManifest = await request('/api/setup/player-manifest');
   assert.equal(playerManifest.ok, true);
-  assert.equal(playerManifest.data.version, '1.5.6');
+  assert.equal(playerManifest.data.version, '1.6.0');
   assert.ok(playerManifest.data.files.includes('player.py'));
 
   const login = await request('/api/auth/login', {
@@ -462,6 +468,34 @@ test('core API smoke test covers auth, content, devices, schedules, and player r
   assert.equal(staleCameraAsset.ok, true);
   assert.equal(staleCameraAsset.data.asset.type, 'stream');
 
+  const cameraWall = await request('/api/playlists', {
+    method: 'POST',
+    headers: authHeaders,
+    body: JSON.stringify({
+      name: 'Front Camera Wall',
+      playlist_type: 'stream',
+      layout_config: { columns: 2, rows: 2, gap: 8, show_labels: true },
+    }),
+  });
+  assert.equal(cameraWall.ok, true);
+  assert.equal(cameraWall.data.playlist.playlist_type, 'stream');
+
+  const cameraWallItems = await request(`/api/playlists/${cameraWall.data.playlist.id}/items`, {
+    method: 'PUT',
+    headers: authHeaders,
+    body: JSON.stringify({
+      items: [
+        {
+          asset_id: cameraAsset.data.asset.id,
+          position: 0,
+          settings: { col_span: 2, row_span: 1 },
+        },
+      ],
+    }),
+  });
+  assert.equal(cameraWallItems.ok, true);
+  assert.equal(cameraWallItems.data.items[0].settings.col_span, 2);
+
   const fallbackPlaylist = await request('/api/playlists', {
     method: 'POST',
     headers: authHeaders,
@@ -511,6 +545,46 @@ test('core API smoke test covers auth, content, devices, schedules, and player r
   assert.equal(deviceRegistration.status, 201);
 
   const deviceId = deviceRegistration.data.device_id;
+  assert.equal(deviceRegistration.data.device.player_mode, 'media');
+
+  const incompatibleCameraAssign = await request(`/api/devices/${deviceId}`, {
+    method: 'PUT',
+    headers: authHeaders,
+    body: JSON.stringify({ assigned_playlist_id: cameraWall.data.playlist.id }),
+  });
+  assert.equal(incompatibleCameraAssign.status, 400);
+
+  const cameraModeDevice = await request(`/api/devices/${deviceId}`, {
+    method: 'PUT',
+    headers: authHeaders,
+    body: JSON.stringify({ player_mode: 'stream' }),
+  });
+  assert.equal(cameraModeDevice.ok, true);
+  assert.equal(cameraModeDevice.data.device.player_mode, 'stream');
+
+  const cameraAssign = await request(`/api/devices/${deviceId}`, {
+    method: 'PUT',
+    headers: authHeaders,
+    body: JSON.stringify({ assigned_playlist_id: cameraWall.data.playlist.id }),
+  });
+  assert.equal(cameraAssign.ok, true);
+
+  const playerCameraWall = await request('/api/player/playlist', {
+    headers: { 'X-Device-Id': deviceId },
+  });
+  assert.equal(playerCameraWall.ok, true);
+  assert.equal(playerCameraWall.data.playlist.name, 'Front Camera Wall');
+  assert.equal(playerCameraWall.data.playlist.playlist_type, 'stream');
+  assert.equal(playerCameraWall.data.config.player_mode, 'stream');
+
+  const mediaModeDevice = await request(`/api/devices/${deviceId}`, {
+    method: 'PUT',
+    headers: authHeaders,
+    body: JSON.stringify({ player_mode: 'media' }),
+  });
+  assert.equal(mediaModeDevice.ok, true);
+  assert.equal(mediaModeDevice.data.device.player_mode, 'media');
+  assert.equal(mediaModeDevice.data.device.assigned_playlist_id, null);
 
   const assignTvOff = await request(`/api/devices/${deviceId}`, {
     method: 'PUT',
@@ -544,7 +618,7 @@ test('core API smoke test covers auth, content, devices, schedules, and player r
     headers: { Authorization: authHeaders.Authorization },
   });
   assert.equal(deviceDetail.ok, true);
-  assert.equal(deviceDetail.data.device.latest_player_version, '1.5.6');
+  assert.equal(deviceDetail.data.device.latest_player_version, '1.6.0');
   assert.equal(deviceDetail.data.device.needs_player_update, true);
 
   const updatePlayers = await request('/api/devices/update-player', {
@@ -553,7 +627,7 @@ test('core API smoke test covers auth, content, devices, schedules, and player r
     body: JSON.stringify({ device_ids: [deviceId] }),
   });
   assert.equal(updatePlayers.ok, true);
-  assert.equal(updatePlayers.data.latest_player_version, '1.5.6');
+  assert.equal(updatePlayers.data.latest_player_version, '1.6.0');
   assert.equal(updatePlayers.data.sent.length, 0);
   assert.equal(updatePlayers.data.queued.length, 1);
   assert.equal(updatePlayers.data.queued[0].id, deviceId);

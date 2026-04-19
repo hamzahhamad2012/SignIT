@@ -3,7 +3,7 @@ import db from '../db/index.js';
 import { authenticateToken, requireManagementAccess } from '../middleware/auth.js';
 import { refreshDevicesForSchedules } from '../services/schedulerRuntime.js';
 import { logActivity } from '../services/activityLog.js';
-import { decoratePlaylist } from '../services/systemPlaylists.js';
+import { decoratePlaylist, isSystemPlaylist } from '../services/systemPlaylists.js';
 
 const router = Router();
 
@@ -101,8 +101,17 @@ function normalizeSchedulePayload(body, existing = {}) {
   return normalized;
 }
 
+function playlistMatchesPlayerMode(playlist, playerMode) {
+  if (isSystemPlaylist(playlist)) return true;
+  return (playlist.playlist_type || 'media') === (playerMode || 'media');
+}
+
 function validateScheduleReferences(payload) {
-  if (payload.playlist_id !== undefined && !db.prepare('SELECT id FROM playlists WHERE id = ?').get(payload.playlist_id)) {
+  let playlist = null;
+  if (payload.playlist_id !== undefined) {
+    playlist = db.prepare('SELECT * FROM playlists WHERE id = ?').get(payload.playlist_id);
+  }
+  if (payload.playlist_id !== undefined && !playlist) {
     throw new Error('Playlist not found');
   }
   if (payload.group_id !== undefined && payload.group_id !== null && !db.prepare('SELECT id FROM groups WHERE id = ?').get(payload.group_id)) {
@@ -110,6 +119,26 @@ function validateScheduleReferences(payload) {
   }
   if (payload.device_id !== undefined && payload.device_id !== null && !db.prepare('SELECT id FROM devices WHERE id = ?').get(payload.device_id)) {
     throw new Error('Device not found');
+  }
+
+  if (!playlist || isSystemPlaylist(playlist)) return;
+
+  if (payload.device_id) {
+    const device = db.prepare('SELECT id, player_mode FROM devices WHERE id = ?').get(payload.device_id);
+    if (device && !playlistMatchesPlayerMode(playlist, device.player_mode)) {
+      throw new Error(playlist.playlist_type === 'stream'
+        ? 'Camera Wall schedules can only target Camera Wall displays'
+        : 'Media schedules can only target Media Displays');
+    }
+  }
+
+  if (payload.group_id) {
+    const devices = db.prepare('SELECT id, player_mode FROM devices WHERE group_id = ?').all(payload.group_id);
+    if (devices.length && devices.every(device => !playlistMatchesPlayerMode(playlist, device.player_mode))) {
+      throw new Error(playlist.playlist_type === 'stream'
+        ? 'This group does not contain any Camera Wall displays'
+        : 'This group does not contain any Media Displays');
+    }
   }
 }
 
@@ -202,7 +231,7 @@ router.put('/:id', (req, res) => {
   let normalized;
   try {
     normalized = normalizeSchedulePayload(req.body, existing);
-    validateScheduleReferences(normalized);
+    validateScheduleReferences({ ...existing, ...normalized });
   } catch (err) {
     return res.status(400).json({ error: err.message });
   }

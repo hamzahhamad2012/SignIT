@@ -9,7 +9,7 @@ import toast from 'react-hot-toast';
 import {
   Monitor, ArrowLeft, Thermometer, Cpu, MemoryStick, HardDrive,
   Clock, Wifi, RotateCw, Camera, Trash2, Edit3, Save, Power, MapPin, Send, Loader2, Download,
-  Moon,
+  Moon, Video,
 } from 'lucide-react';
 
 const displayRotations = [
@@ -68,6 +68,10 @@ function getUpdateLabel(status) {
     failed: 'Update failed',
   };
   return labels[status] || status;
+}
+
+function isSystemPlaylist(playlist) {
+  return playlist?.is_system || playlist?.system_action === 'display_off' || playlist?.name === 'TV_OFF';
 }
 
 export default function DeviceDetail() {
@@ -261,6 +265,13 @@ export default function DeviceDetail() {
     toast.success('Group updated');
   };
 
+  const handlePlayerModeChange = async (playerMode) => {
+    await api.put(`/devices/${id}`, { player_mode: playerMode });
+    const updated = await api.get(`/devices/${id}`);
+    setDevice(updated.device);
+    toast.success(playerMode === 'stream' ? 'Device set as Camera Wall' : 'Device set as Media Display');
+  };
+
   const handleOrientationChange = async (displayRotation) => {
     await api.put(`/devices/${id}`, { display_rotation: displayRotation });
     const updated = await api.get(`/devices/${id}`);
@@ -342,6 +353,8 @@ export default function DeviceDetail() {
     { label: 'Disk', value: device.disk_usage != null ? `${Number(device.disk_usage).toFixed(0)}%` : '—', icon: HardDrive, color: 'text-pink-400' },
   ];
   const currentDisplayRotation = device.display_rotation || (device.orientation === 'portrait' ? 'portrait-right' : 'landscape');
+  const playerMode = device.player_mode || 'media';
+  const compatiblePlaylists = playlists.filter(p => isSystemPlaylist(p) || (p.playlist_type || 'media') === playerMode);
   const updateActive = activePlayerUpdateStatus(device.player_update_status) || pendingCmd === 'update_player';
   const updateProgress = clampProgress(device.player_update_progress);
   const updateEta = formatEta(device.player_update_eta_seconds);
@@ -397,6 +410,7 @@ export default function DeviceDetail() {
                 ['MAC Address', device.mac_address || '—'],
                 ['IP Address', device.ip_address || '—'],
                 ['Resolution', device.resolution],
+                ['Player Role', playerMode === 'stream' ? 'Camera Wall' : 'Media Display'],
                 ['Orientation', device.display_rotation_label || device.orientation],
                 ['OS', device.os_info || '—'],
                 ['Player Version', device.player_version || '—'],
@@ -451,6 +465,40 @@ export default function DeviceDetail() {
 
         <div className="space-y-4">
           <div className="card">
+            <h2 className="text-sm font-semibold text-zinc-200 mb-3">Player Role</h2>
+            {canManage ? (
+              <div className="grid grid-cols-2 gap-2">
+                {[
+                  { value: 'media', label: 'Media Display', helper: 'Images, videos, widgets', Icon: Monitor },
+                  { value: 'stream', label: 'Camera Wall', helper: 'RTSP camera grids', Icon: Video },
+                ].map(option => (
+                  <button
+                    key={option.value}
+                    type="button"
+                    onClick={() => handlePlayerModeChange(option.value)}
+                    className={`rounded-xl border p-3 text-left transition-all ${playerMode === option.value
+                      ? 'border-accent/50 bg-accent/10 text-zinc-100'
+                      : 'border-surface-border bg-surface-overlay hover:bg-surface-hover text-zinc-400'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2 text-xs font-semibold">
+                      <option.Icon size={14} /> {option.label}
+                    </div>
+                    <p className="text-[10px] text-zinc-500 mt-1">{option.helper}</p>
+                  </button>
+                ))}
+              </div>
+            ) : (
+              <p className="text-sm text-zinc-300">{playerMode === 'stream' ? 'Camera Wall' : 'Media Display'}</p>
+            )}
+            <p className="text-xs text-zinc-600 mt-3">
+              {playerMode === 'stream'
+                ? 'Only Camera Wall playlists can be assigned to this Pi.'
+                : 'Only Media playlists can be assigned to this Pi.'}
+            </p>
+          </div>
+
+          <div className="card">
             <h2 className="text-sm font-semibold text-zinc-200 mb-3">Playlist State</h2>
             <div className="space-y-2 mb-3">
               <div className="rounded-lg bg-surface-overlay px-3 py-2">
@@ -479,7 +527,11 @@ export default function DeviceDetail() {
                   className="w-full"
                 >
                   <option value="">None (use schedule)</option>
-                  {playlists.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                  {compatiblePlaylists.map(p => (
+                    <option key={p.id} value={p.id}>
+                      {p.name}{p.playlist_type === 'stream' ? ' (Camera Wall)' : ''}
+                    </option>
+                  ))}
                 </select>
                 {device.assigned_playlist_id && (
                   <button

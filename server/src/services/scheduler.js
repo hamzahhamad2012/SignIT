@@ -163,8 +163,12 @@ export function getActiveScheduleForDevice(deviceId, now = new Date()) {
         s.device_id = ?
         OR (? IS NOT NULL AND s.group_id = ?)
       )
+      AND (
+        p.playlist_type = ?
+        OR p.name = 'TV_OFF'
+      )
     ORDER BY s.priority DESC, target_scope DESC, s.id DESC
-  `).all(deviceId, device.group_id, deviceId, device.group_id, device.group_id);
+  `).all(deviceId, device.group_id, deviceId, device.group_id, device.group_id, device.player_mode || 'media');
 
   for (const schedule of schedules) {
     if (isScheduleActiveAt(schedule, now, getSchedulerTimezone())) {
@@ -182,11 +186,23 @@ export function getActivePlaylistForDevice(deviceId, now = new Date()) {
   const activeSchedule = getActiveScheduleForDevice(deviceId, now);
   if (activeSchedule) return activeSchedule.playlist_id;
 
-  if (device.assigned_playlist_id) return device.assigned_playlist_id;
+  if (device.assigned_playlist_id) {
+    const assigned = db.prepare('SELECT id, name, playlist_type FROM playlists WHERE id = ?').get(device.assigned_playlist_id);
+    if (assigned && (assigned.name === 'TV_OFF' || (assigned.playlist_type || 'media') === (device.player_mode || 'media'))) {
+      return device.assigned_playlist_id;
+    }
+  }
 
   if (device.group_id) {
-    const group = db.prepare('SELECT default_playlist_id FROM groups WHERE id = ?').get(device.group_id);
-    if (group?.default_playlist_id) return group.default_playlist_id;
+    const group = db.prepare(`
+      SELECT g.default_playlist_id, p.name, p.playlist_type
+      FROM groups g
+      LEFT JOIN playlists p ON p.id = g.default_playlist_id
+      WHERE g.id = ?
+    `).get(device.group_id);
+    if (group?.default_playlist_id && (group.name === 'TV_OFF' || (group.playlist_type || 'media') === (device.player_mode || 'media'))) {
+      return group.default_playlist_id;
+    }
   }
 
   return null;

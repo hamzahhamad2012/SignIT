@@ -10,6 +10,7 @@ import toast from 'react-hot-toast';
 import {
   Monitor, Search, Filter, Thermometer, Cpu,
   MemoryStick, Clock, Wifi, RefreshCw, Plus, MapPin, RotateCw, Download, Loader2,
+  Video,
 } from 'lucide-react';
 
 function timeAgo(dateStr) {
@@ -247,10 +248,16 @@ export default function Devices() {
                 </div>
               )}
 
-              <div className="mb-3 rounded-lg bg-surface-overlay px-3 py-2">
-                <p className={`text-[11px] uppercase tracking-wide font-semibold ${playlistState.className}`}>
-                  {playlistState.label}
-                </p>
+                <div className="mb-3 rounded-lg bg-surface-overlay px-3 py-2">
+                <div className="flex items-center justify-between gap-2">
+                  <p className={`text-[11px] uppercase tracking-wide font-semibold ${playlistState.className}`}>
+                    {playlistState.label}
+                  </p>
+                  <span className={`inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[10px] ${device.player_mode === 'stream' ? 'bg-cyan-500/15 text-cyan-300' : 'bg-violet-500/15 text-violet-300'}`}>
+                    {device.player_mode === 'stream' ? <Video size={10} /> : <Monitor size={10} />}
+                    {device.player_mode === 'stream' ? 'Camera Wall' : 'Media'}
+                  </span>
+                </div>
                 <p className="text-sm font-semibold text-zinc-100 truncate mt-0.5">
                   {playlistState.name}
                 </p>

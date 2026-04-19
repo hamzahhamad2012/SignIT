@@ -8,8 +8,44 @@ const router = Router();
 
 router.use(authenticateToken, requireManagementAccess);
 
+const PLAYLIST_TYPES = new Set(['media', 'stream']);
+
+function normalizePlaylistType(value) {
+  return PLAYLIST_TYPES.has(value) ? value : 'media';
+}
+
+function isCompatibleAssignment(playlist, device) {
+  if (isSystemPlaylist(playlist)) return true;
+  return normalizePlaylistType(playlist.playlist_type) === normalizePlaylistType(device.player_mode);
+}
+
+function validateItemsForPlaylist(playlist, items) {
+  const assetIds = [...new Set(items.map(item => item.asset_id).filter(Boolean))];
+  if (assetIds.length === 0) return null;
+
+  const assets = db.prepare(`
+    SELECT id, type, url FROM assets
+    WHERE id IN (${assetIds.map(() => '?').join(',')})
+  `).all(...assetIds);
+  const assetById = new Map(assets.map(asset => [String(asset.id), asset]));
+
+  for (const item of items) {
+    const asset = assetById.get(String(item.asset_id));
+    if (!asset) return `Asset ${item.asset_id} was not found`;
+    const isStreamAsset = asset.type === 'stream' || /^rtsps?:\/\//i.test(String(asset.url || ''));
+    if (normalizePlaylistType(playlist.playlist_type) === 'stream' && !isStreamAsset) {
+      return 'Camera Wall playlists can only contain Live Stream / Camera assets';
+    }
+    if (normalizePlaylistType(playlist.playlist_type) === 'media' && isStreamAsset) {
+      return 'RTSP/RTSPS cameras belong in a Camera Wall playlist';
+    }
+  }
+
+  return null;
+}
+
 router.get('/', (req, res) => {
-  const { search } = req.query;
+  const { search, playlist_type, type } = req.query;
   let query = `
     SELECT p.*, COUNT(pi.id) as item_count
     FROM playlists p
@@ -18,6 +54,11 @@ router.get('/', (req, res) => {
   `;
   const params = [];
   if (search) { query += ' AND p.name LIKE ?'; params.push(`%${search}%`); }
+  const requestedType = playlist_type || type;
+  if (PLAYLIST_TYPES.has(requestedType)) {
+    query += ' AND p.playlist_type = ?';
+    params.push(requestedType);
+  }
   query += ' GROUP BY p.id ORDER BY p.updated_at DESC';
 
   const playlists = db.prepare(query).all(...params);
@@ -54,17 +95,22 @@ router.get('/:id', (req, res) => {
 });
 
 router.post('/', (req, res) => {
-  const { name, description, layout, layout_config, transition, transition_duration, bg_color } = req.body;
+  const { name, description, playlist_type, layout, layout_config, transition, transition_duration, bg_color } = req.body;
   if (!name) return res.status(400).json({ error: 'Name required' });
+  const normalizedType = normalizePlaylistType(playlist_type);
+  const defaultLayoutConfig = normalizedType === 'stream'
+    ? { columns: 2, rows: 2, gap: 8, show_labels: true, ...(layout_config || {}) }
+    : (layout_config || {});
 
   const result = db.prepare(`
-    INSERT INTO playlists (name, description, layout, layout_config, transition, transition_duration, bg_color)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO playlists (name, description, playlist_type, layout, layout_config, transition, transition_duration, bg_color)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     name,
     description || null,
-    layout || 'fullscreen',
-    JSON.stringify(layout_config || {}),
+    normalizedType,
+    normalizedType === 'stream' ? 'custom' : (layout || 'fullscreen'),
+    JSON.stringify(defaultLayoutConfig),
     transition || 'fade',
     transition_duration || 800,
     bg_color || '#000000',
@@ -82,7 +128,7 @@ router.post('/', (req, res) => {
 });
 
 router.put('/:id', (req, res) => {
-  const { name, description, layout, layout_config, transition, transition_duration, bg_color } = req.body;
+  const { name, description, playlist_type, layout, layout_config, transition, transition_duration, bg_color } = req.body;
   const playlist = db.prepare('SELECT * FROM playlists WHERE id = ?').get(req.params.id);
   if (!playlist) return res.status(404).json({ error: 'Playlist not found' });
   if (isSystemPlaylist(playlist)) return res.status(400).json({ error: 'System playlists are fixed and cannot be edited' });
@@ -92,6 +138,7 @@ router.put('/:id', (req, res) => {
 
   if (name !== undefined) { updates.push('name = ?'); params.push(name); }
   if (description !== undefined) { updates.push('description = ?'); params.push(description); }
+  if (playlist_type !== undefined) { updates.push('playlist_type = ?'); params.push(normalizePlaylistType(playlist_type)); }
   if (layout !== undefined) { updates.push('layout = ?'); params.push(layout); }
   if (layout_config !== undefined) { updates.push('layout_config = ?'); params.push(JSON.stringify(layout_config)); }
   if (transition !== undefined) { updates.push('transition = ?'); params.push(transition); }
@@ -133,6 +180,8 @@ router.put('/:id/items', (req, res) => {
   const playlist = db.prepare('SELECT * FROM playlists WHERE id = ?').get(req.params.id);
   if (!playlist) return res.status(404).json({ error: 'Playlist not found' });
   if (isSystemPlaylist(playlist)) return res.status(400).json({ error: 'System playlists are fixed and cannot contain custom items' });
+  const validationError = validateItemsForPlaylist(playlist, items);
+  if (validationError) return res.status(400).json({ error: validationError });
 
   const transaction = db.transaction(() => {
     db.prepare('DELETE FROM playlist_items WHERE playlist_id = ?').run(req.params.id);
@@ -191,10 +240,16 @@ router.post('/:id/deploy', (req, res) => {
 
   const io = req.app.get('io');
   let deployed = 0;
+  const skipped = [];
 
   if (device_ids && device_ids.length) {
     const update = db.prepare('UPDATE devices SET assigned_playlist_id = ? WHERE id = ?');
     for (const deviceId of device_ids) {
+      const device = db.prepare('SELECT id, name, player_mode FROM devices WHERE id = ?').get(deviceId);
+      if (!device || !isCompatibleAssignment(playlist, device)) {
+        skipped.push({ id: deviceId, name: device?.name, reason: 'incompatible_player_mode' });
+        continue;
+      }
       update.run(req.params.id, deviceId);
       io.to(`device:${deviceId}`).emit('playlist:deploy', { playlistId: parseInt(req.params.id) });
       deployed++;
@@ -202,9 +257,17 @@ router.post('/:id/deploy', (req, res) => {
   }
 
   if (group_id) {
-    db.prepare('UPDATE groups SET default_playlist_id = ? WHERE id = ?').run(req.params.id, group_id);
-    const devices = db.prepare('SELECT id FROM devices WHERE group_id = ?').all(group_id);
+    const devices = db.prepare('SELECT id, name, player_mode FROM devices WHERE group_id = ?').all(group_id);
+    const compatibleDevices = devices.filter(device => isCompatibleAssignment(playlist, device));
+    const incompatibleDevices = devices.filter(device => !isCompatibleAssignment(playlist, device));
+    incompatibleDevices.forEach(device => skipped.push({ id: device.id, name: device.name, reason: 'incompatible_player_mode' }));
+
+    if (compatibleDevices.length > 0) {
+      db.prepare('UPDATE groups SET default_playlist_id = ? WHERE id = ?').run(req.params.id, group_id);
+    }
+
     for (const d of devices) {
+      if (!isCompatibleAssignment(playlist, d)) continue;
       db.prepare('UPDATE devices SET assigned_playlist_id = ? WHERE id = ?').run(req.params.id, d.id);
       io.to(`device:${d.id}`).emit('playlist:deploy', { playlistId: parseInt(req.params.id) });
       deployed++;
@@ -218,12 +281,13 @@ router.post('/:id/deploy', (req, res) => {
       playlist_id: Number(req.params.id),
       name: playlist.name,
       deployed,
+      skipped_count: skipped.length,
       device_count: device_ids?.length || 0,
       group_id: group_id || null,
     },
   });
 
-  res.json({ success: true, deployed });
+  res.json({ success: true, deployed, skipped });
 });
 
 export default router;

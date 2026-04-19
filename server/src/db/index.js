@@ -67,6 +67,14 @@ function applyMigrations() {
     db.prepare("ALTER TABLE activity_log ADD COLUMN category TEXT DEFAULT 'system'").run();
   }
 
+  if (!hasColumn('devices', 'player_mode')) {
+    db.prepare("ALTER TABLE devices ADD COLUMN player_mode TEXT DEFAULT 'media'").run();
+  }
+
+  if (!hasColumn('playlists', 'playlist_type')) {
+    db.prepare("ALTER TABLE playlists ADD COLUMN playlist_type TEXT DEFAULT 'media'").run();
+  }
+
   db.prepare(`
     CREATE TABLE IF NOT EXISTS player_update_jobs (
       device_id TEXT PRIMARY KEY REFERENCES devices(id) ON DELETE CASCADE,
@@ -105,8 +113,12 @@ function applyMigrations() {
   db.prepare('CREATE INDEX IF NOT EXISTS idx_activity_log_user ON activity_log(user_id)').run();
   db.prepare('CREATE INDEX IF NOT EXISTS idx_activity_log_category ON activity_log(category)').run();
   db.prepare('CREATE INDEX IF NOT EXISTS idx_player_update_jobs_status ON player_update_jobs(status)').run();
+  db.prepare('CREATE INDEX IF NOT EXISTS idx_devices_player_mode ON devices(player_mode)').run();
+  db.prepare('CREATE INDEX IF NOT EXISTS idx_playlists_playlist_type ON playlists(playlist_type)').run();
 
   db.prepare("UPDATE users SET status = 'active' WHERE status IS NULL OR status = ''").run();
+  db.prepare("UPDATE devices SET player_mode = 'media' WHERE player_mode IS NULL OR player_mode = ''").run();
+  db.prepare("UPDATE playlists SET playlist_type = 'media' WHERE playlist_type IS NULL OR playlist_type = ''").run();
   db.prepare(`
     UPDATE assets
     SET type = 'stream', updated_at = CURRENT_TIMESTAMP

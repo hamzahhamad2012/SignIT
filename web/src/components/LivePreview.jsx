@@ -4,7 +4,7 @@ import { Play, Pause, SkipForward, Maximize, Minimize, X } from 'lucide-react';
 const isRtspUrl = (value) => /^rtsps?:\/\//i.test(String(value || '').trim());
 const getEffectiveType = (item) => isRtspUrl(item?.url) ? 'stream' : item?.asset_type;
 
-export default function LivePreview({ items, transition = 'fade', transitionDuration = 800, bgColor = '#000' }) {
+export default function LivePreview({ items, transition = 'fade', transitionDuration = 800, bgColor = '#000', playlistType = 'media', layoutConfig = {} }) {
   const [currentIdx, setCurrentIdx] = useState(0);
   const [playing, setPlaying] = useState(true);
   const [fullscreen, setFullscreen] = useState(false);
@@ -60,6 +60,50 @@ export default function LivePreview({ items, transition = 'fade', transitionDura
     return (
       <div className="aspect-video rounded-xl bg-black flex items-center justify-center text-zinc-600 text-sm">
         No content to preview
+      </div>
+    );
+  }
+
+  if (playlistType === 'stream') {
+    const columns = Math.max(1, Math.min(6, parseInt(layoutConfig.columns, 10) || 2));
+    const rows = Math.max(1, Math.min(6, parseInt(layoutConfig.rows, 10) || Math.ceil(items.length / columns) || 1));
+    const gap = Math.max(0, Math.min(40, parseInt(layoutConfig.gap, 10) || 0));
+
+    return (
+      <div ref={containerRef} className="relative group rounded-xl overflow-hidden" style={{ background: bgColor }}>
+        <div
+          className="aspect-video grid"
+          style={{
+            gridTemplateColumns: `repeat(${columns}, minmax(0, 1fr))`,
+            gridTemplateRows: `repeat(${rows}, minmax(0, 1fr))`,
+            gap,
+            padding: gap,
+          }}
+        >
+          {items.map((item, idx) => {
+            const colSpan = Math.max(1, Math.min(columns, parseInt(item.settings?.col_span, 10) || 1));
+            const rowSpan = Math.max(1, Math.min(rows, parseInt(item.settings?.row_span, 10) || 1));
+            return (
+              <div
+                key={item.id || idx}
+                className="relative overflow-hidden rounded-lg border border-cyan-400/10 bg-slate-950 flex items-center justify-center"
+                style={{ gridColumn: `span ${colSpan}`, gridRow: `span ${rowSpan}` }}
+              >
+                <div className="absolute inset-0 opacity-30 bg-[radial-gradient(circle_at_center,rgba(34,211,238,.25),transparent_55%)]" />
+                <div className="relative flex flex-col items-center gap-2 text-center px-4">
+                  <div className="w-3 h-3 rounded-full bg-emerald-400 shadow-[0_0_24px_rgba(52,211,153,0.8)]" />
+                  <p className="text-xs font-semibold text-zinc-100 truncate max-w-[160px]">{item.asset_name || `Camera ${idx + 1}`}</p>
+                  <p className="text-[10px] text-zinc-500">Native Pi stream window</p>
+                </div>
+                {layoutConfig.show_labels !== false && (
+                  <div className="absolute left-2 bottom-2 right-2 truncate rounded-md bg-black/55 px-2 py-1 text-[10px] text-cyan-100">
+                    {item.asset_name || `Camera ${idx + 1}`}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
       </div>
     );
   }

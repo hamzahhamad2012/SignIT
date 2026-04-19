@@ -28,7 +28,7 @@ import psutil
 from config import load_config, save_config, CACHE_DIR, LOG_DIR
 
 CONTENT_SERVER_PORT = 8889
-PLAYER_VERSION = '1.5.6'
+PLAYER_VERSION = '1.6.0'
 STREAM_LOG_PATH = os.path.join(LOG_DIR, 'stream-player.log')
 UPDATE_FILES = {
     'player.py',
@@ -65,9 +65,11 @@ class SignITPlayer:
         self.current_playlist = None
         self.chromium_proc = None
         self.stream_proc = None
+        self.stream_procs = []
         self.stream_log_file = None
         self.stream_player_kind = None
         self.active_stream_url = None
+        self.active_stream_wall = None
         self.stream_dependency_checked = False
         self.rotation_fallback = False
         self.update_in_progress = False
@@ -251,6 +253,11 @@ class SignITPlayer:
                     self._stop_stream_player()
                     self._set_display_power('off')
                     return
+                if self._is_stream_playlist(playlist):
+                    if self.chromium_proc and self.chromium_proc.poll() is None:
+                        self._stop_chromium()
+                    self._ensure_stream_player_alive()
+                    return
                 initial_stream_url = self._initial_stream_url(playlist)
                 if self._is_stream_only_playlist(playlist):
                     if self.chromium_proc and self.chromium_proc.poll() is None:
@@ -277,6 +284,15 @@ class SignITPlayer:
 
             self._set_display_power('on')
             self._stop_stream_player()
+            if self._is_stream_playlist(playlist):
+                self._stop_chromium()
+                log.info(f'Starting Camera Wall playlist with {len(playlist.get("items", []))} stream(s)')
+                if self._start_stream_wall(playlist):
+                    return
+                log.warning('Camera Wall playback failed; falling back to standby')
+                self._show_standby()
+                return
+
             initial_stream_url = self._initial_stream_url(playlist)
             if self._is_stream_only_playlist(playlist):
                 self._stop_chromium()
@@ -509,6 +525,20 @@ class SignITPlayer:
         items = playlist.get('items', []) if playlist else []
         return len(items) == 1 and bool(self._stream_url_for_item(items[0]))
 
+    def _is_stream_playlist(self, playlist):
+        if not playlist:
+            return False
+        if playlist.get('playlist_type') == 'stream':
+            return True
+        items = playlist.get('items', [])
+        return bool(items) and all(self._stream_url_for_item(item) for item in items)
+
+    def _stream_items_for_playlist(self, playlist):
+        return [
+            item for item in (playlist.get('items', []) if playlist else [])
+            if self._stream_url_for_item(item)
+        ]
+
     def _find_executable(self, candidates):
         for candidate in candidates:
             resolved = candidate if os.path.isabs(candidate) else shutil.which(candidate)
@@ -582,20 +612,23 @@ class SignITPlayer:
         except Exception:
             return ''
 
-    def _open_stream_log(self, kind, url):
+    def _open_stream_log(self, kind, url, label=None):
         os.makedirs(LOG_DIR, exist_ok=True)
         stream_log = open(STREAM_LOG_PATH, 'a', buffering=1)
         stream_log.write('\n')
         stream_log.write('=' * 72 + '\n')
-        stream_log.write(f'{datetime.utcnow().isoformat()}Z starting {kind}: {self._mask_stream_url(url)}\n')
+        stream_log.write(f'{datetime.utcnow().isoformat()}Z starting {kind}{f" [{label}]" if label else ""}: {self._mask_stream_url(url)}\n')
         stream_log.write('=' * 72 + '\n')
         return stream_log
 
-    def _stream_player_commands(self, url):
+    def _stream_player_commands(self, url, tile=None, title='SignIT Camera'):
+        fullscreen = tile is None
         ffplay = self._find_ffplay()
         if ffplay:
             screen_w, screen_h = self._get_screen_resolution()
-            yield 'ffplay', [
+            width = int(tile.get('w', screen_w)) if tile else screen_w
+            height = int(tile.get('h', screen_h)) if tile else screen_h
+            cmd = [
                 ffplay,
                 '-hide_banner',
                 '-loglevel', 'warning',
@@ -604,30 +637,192 @@ class SignITPlayer:
                 '-flags', 'low_delay',
                 '-framedrop',
                 '-an',
-                '-fs',
                 '-noborder',
-                '-alwaysontop',
-                '-x', str(screen_w),
-                '-y', str(screen_h),
-                url,
+                '-window_title', title,
+                '-x', str(width),
+                '-y', str(height),
             ]
+            if fullscreen:
+                cmd.extend(['-fs', '-alwaysontop'])
+            cmd.append(url)
+            yield 'ffplay', cmd
 
         mpv = self._find_mpv()
         if mpv:
-            yield 'mpv', [
+            screen_w, screen_h = self._get_screen_resolution()
+            width = int(tile.get('w', screen_w)) if tile else screen_w
+            height = int(tile.get('h', screen_h)) if tile else screen_h
+            cmd = [
                 mpv,
-                '--fs',
-                '--ontop',
                 '--no-border',
                 '--no-osc',
                 '--force-window=yes',
+                f'--title={title}',
                 '--profile=low-latency',
                 '--demuxer-lavf-o=rtsp_transport=tcp',
                 '--hwdec=auto-safe',
                 '--no-audio',
                 '--msg-level=all=warn',
-                url,
             ]
+            if fullscreen:
+                cmd.extend(['--fs', '--ontop'])
+            else:
+                cmd.append(f'--geometry={width}x{height}+{int(tile.get("x", 0))}+{int(tile.get("y", 0))}')
+            cmd.append(url)
+            yield 'mpv', cmd
+
+    def _stream_player_env(self, tile=None):
+        env = os.environ.copy()
+        env.setdefault('DISPLAY', ':0')
+        env.setdefault('SDL_VIDEODRIVER', 'x11')
+        if tile:
+            env['SDL_VIDEO_WINDOW_POS'] = f'{int(tile.get("x", 0))},{int(tile.get("y", 0))}'
+        return env
+
+    def _camera_wall_layout(self, playlist):
+        items = self._stream_items_for_playlist(playlist)
+        config = playlist.get('layout_config') or {}
+        if isinstance(config, str):
+            try:
+                config = json.loads(config or '{}')
+            except Exception:
+                config = {}
+
+        screen_w, screen_h = self._get_screen_resolution()
+        columns = max(1, min(6, int(config.get('columns') or 2)))
+        rows = max(1, min(6, int(config.get('rows') or max(1, (len(items) + columns - 1) // columns))))
+        gap = max(0, min(80, int(config.get('gap') or 0)))
+        cell_w = max(1, (screen_w - gap * (columns + 1)) // columns)
+        cell_h = max(1, (screen_h - gap * (rows + 1)) // rows)
+
+        tiles = []
+        occupied = [[False for _ in range(columns)] for _ in range(rows)]
+
+        def find_slot(col_span, row_span):
+            for row in range(rows):
+                for col in range(columns):
+                    if col + col_span > columns or row + row_span > rows:
+                        continue
+                    blocked = any(
+                        occupied[r][c]
+                        for r in range(row, row + row_span)
+                        for c in range(col, col + col_span)
+                    )
+                    if not blocked:
+                        return row, col
+            return None
+
+        for idx, item in enumerate(items):
+            settings = item.get('settings') or {}
+            col_span = max(1, min(columns, int(settings.get('col_span') or settings.get('w') or 1)))
+            row_span = max(1, min(rows, int(settings.get('row_span') or settings.get('h') or 1)))
+            slot = find_slot(col_span, row_span)
+            if not slot:
+                log.warning(f'Camera Wall has no space left for {item.get("asset_name") or f"camera {idx + 1}"}')
+                continue
+            row, col = slot
+            for r in range(row, row + row_span):
+                for c in range(col, col + col_span):
+                    occupied[r][c] = True
+            tiles.append({
+                'item': item,
+                'url': self._stream_url_for_item(item),
+                'label': item.get('asset_name') or f'Camera {idx + 1}',
+                'x': gap + col * (cell_w + gap),
+                'y': gap + row * (cell_h + gap),
+                'w': cell_w * col_span + gap * (col_span - 1),
+                'h': cell_h * row_span + gap * (row_span - 1),
+            })
+
+        return tiles
+
+    def _start_stream_process(self, url, tile=None, label='Camera'):
+        title = f'SignIT {label}'[:80]
+        failures = []
+        for kind, cmd in self._stream_player_commands(url, tile=tile, title=title):
+            log_file = None
+            try:
+                log.info(f'Starting {label} via {kind}: {self._mask_stream_url(url)}')
+                log_file = self._open_stream_log(kind, url, label=label)
+                proc = subprocess.Popen(
+                    cmd,
+                    env=self._stream_player_env(tile),
+                    stdout=log_file,
+                    stderr=log_file,
+                )
+                time.sleep(1.5)
+                if proc.poll() is None:
+                    return {'proc': proc, 'log_file': log_file, 'kind': kind, 'url': url, 'tile': tile, 'label': label}
+                exit_code = proc.returncode
+                failures.append(f'{kind} exited with code {exit_code}')
+                log.warning(f'{label} failed to stay open with {kind} (exit {exit_code})')
+                log_file.close()
+            except Exception as e:
+                failures.append(f'{kind}: {e}')
+                log.error(f'Could not start {label} with {kind}: {e}')
+                if log_file:
+                    log_file.close()
+
+        raise RuntimeError('; '.join(failures) or 'stream process failed')
+
+    def _start_stream_wall(self, playlist):
+        """Tile multiple RTSP/RTSPS feeds across the display using native stream players."""
+        items = self._stream_items_for_playlist(playlist)
+        if not items:
+            log.error('Camera Wall playlist has no RTSP/RTSPS stream items')
+            return False
+
+        wall_hash = hashlib.md5(json.dumps(playlist, sort_keys=True).encode()).hexdigest()
+        if self.active_stream_wall == wall_hash and self.stream_procs and all(entry['proc'].poll() is None for entry in self.stream_procs):
+            return True
+
+        self._stop_stream_player()
+        if not self._find_stream_player():
+            self._ensure_stream_player_package()
+        if not self._find_stream_player():
+            log.error('No stream player is installed; cannot play Camera Wall')
+            self._emit_player_status(stream_status='failed', stream_error='missing_stream_player')
+            return False
+
+        tiles = self._camera_wall_layout(playlist)
+        if not tiles:
+            log.error('Camera Wall layout produced no playable tiles')
+            return False
+
+        started = []
+        try:
+            if len(tiles) == 1:
+                entry = self._start_stream_process(tiles[0]['url'], tile=None, label=tiles[0]['label'])
+            else:
+                entry = None
+
+            if entry:
+                started.append(entry)
+            else:
+                for idx, tile in enumerate(tiles):
+                    label = tile['label'] or f'Camera {idx + 1}'
+                    started.append(self._start_stream_process(tile['url'], tile=tile, label=label))
+
+            self.stream_procs = started
+            self.active_stream_wall = wall_hash
+            self.active_stream_url = None
+            self.stream_proc = started[0]['proc'] if len(started) == 1 else None
+            self.stream_player_kind = ','.join(sorted({entry['kind'] for entry in started}))
+            self._emit_player_status(stream_status='playing', stream_player=self.stream_player_kind, stream_count=len(started))
+            return True
+        except Exception as e:
+            log.error(f'Camera Wall failed: {e}')
+            for entry in started:
+                try:
+                    if entry['proc'].poll() is None:
+                        entry['proc'].terminate()
+                    entry['log_file'].close()
+                except Exception:
+                    pass
+            self.stream_procs = []
+            self.active_stream_wall = None
+            self._emit_player_status(stream_status='failed', stream_error=str(e)[-900:])
+            return False
 
     def _start_stream_player(self, url):
         """Play RTSP/RTSPS camera feeds outside Chromium because browsers do not handle them."""
@@ -647,9 +842,6 @@ class SignITPlayer:
             self._emit_player_status(stream_status='failed', stream_error='missing_stream_player')
             return False
 
-        env = os.environ.copy()
-        env.setdefault('DISPLAY', ':0')
-        env.setdefault('SDL_VIDEODRIVER', 'x11')
         masked_url = self._mask_stream_url(url)
         failures = []
 
@@ -659,7 +851,7 @@ class SignITPlayer:
                 self.stream_log_file = self._open_stream_log(kind, url)
                 self.stream_proc = subprocess.Popen(
                     cmd,
-                    env=env,
+                    env=self._stream_player_env(),
                     stdout=self.stream_log_file,
                     stderr=self.stream_log_file,
                 )
@@ -667,6 +859,7 @@ class SignITPlayer:
 
                 if self.stream_proc.poll() is None:
                     self.active_stream_url = url
+                    self.active_stream_wall = None
                     self.stream_player_kind = kind
                     self._emit_player_status(stream_status='playing', stream_player=kind)
                     return True
@@ -696,19 +889,37 @@ class SignITPlayer:
         return False
 
     def _stop_stream_player(self):
-        if self.stream_proc and self.stream_proc.poll() is None:
+        tracked_wall_procs = {id(entry.get('proc')) for entry in self.stream_procs}
+        if self.stream_proc and id(self.stream_proc) not in tracked_wall_procs and self.stream_proc.poll() is None:
             log.info('Stopping camera stream')
             self.stream_proc.terminate()
             try:
                 self.stream_proc.wait(timeout=5)
             except Exception:
                 self.stream_proc.kill()
+        for entry in self.stream_procs:
+            proc = entry.get('proc')
+            if proc and proc.poll() is None:
+                log.info(f'Stopping camera wall stream: {entry.get("label", "Camera")}')
+                proc.terminate()
+                try:
+                    proc.wait(timeout=5)
+                except Exception:
+                    proc.kill()
+            log_file = entry.get('log_file')
+            if log_file:
+                try:
+                    log_file.close()
+                except Exception:
+                    pass
         self.stream_proc = None
+        self.stream_procs = []
         self.stream_player_kind = None
         if self.stream_log_file:
             self.stream_log_file.close()
             self.stream_log_file = None
         self.active_stream_url = None
+        self.active_stream_wall = None
 
     def _stop_chromium(self):
         if self.chromium_proc and self.chromium_proc.poll() is None:
@@ -721,6 +932,17 @@ class SignITPlayer:
         self.chromium_proc = None
 
     def _ensure_stream_player_alive(self):
+        if self.active_stream_wall and self.stream_procs:
+            dead = [entry for entry in self.stream_procs if entry.get('proc') and entry['proc'].poll() is not None]
+            if dead and self.current_playlist:
+                labels = ', '.join(entry.get('label', 'Camera') for entry in dead)
+                tail = self._tail_stream_log()
+                log.warning(f'Camera Wall stream exited ({labels}); restarting wall. Last output: {tail[-500:]}')
+                playlist = self.current_playlist
+                self._stop_stream_player()
+                self._start_stream_wall(playlist)
+            return
+
         if self.active_stream_url and self.stream_proc and self.stream_proc.poll() is not None:
             url = self.active_stream_url
             tail = self._tail_stream_log()

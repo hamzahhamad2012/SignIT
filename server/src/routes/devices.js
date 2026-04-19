@@ -8,8 +8,20 @@ import { logActivity } from '../services/activityLog.js';
 import { getLatestPlayerVersion, isPlayerOutdated } from '../services/playerVersion.js';
 import { queuePlayerUpdate, sendQueuedPlayerUpdate } from '../services/playerUpdates.js';
 import { DISPLAY_ROTATIONS, getDeviceDisplayRotation, getDisplayRotation } from '../services/displayRotation.js';
+import { isSystemPlaylist } from '../services/systemPlaylists.js';
 
 const router = Router();
+const PLAYER_MODES = new Set(['media', 'stream']);
+
+function normalizePlayerMode(value) {
+  return PLAYER_MODES.has(value) ? value : 'media';
+}
+
+function playlistMatchesPlayerMode(playlist, playerMode) {
+  if (!playlist) return true;
+  if (isSystemPlaylist(playlist)) return true;
+  return (playlist.playlist_type || 'media') === normalizePlayerMode(playerMode);
+}
 
 function annotatePlayerVersion(device, latestVersion = getLatestPlayerVersion()) {
   device.latest_player_version = latestVersion;
@@ -32,8 +44,11 @@ router.get('/', authenticateToken, (req, res) => {
   let query = `
     SELECT d.*, g.name as group_name,
       cp.name as current_playlist_name,
+      cp.playlist_type as current_playlist_type,
       ap.name as assigned_playlist_name,
+      ap.playlist_type as assigned_playlist_type,
       gp.name as group_default_playlist_name,
+      gp.playlist_type as group_default_playlist_type,
       COALESCE(cp.name, ap.name, gp.name) as playlist_name,
       COALESCE(cp.name, ap.name, gp.name) as playback_playlist_name,
       CASE
@@ -167,8 +182,11 @@ router.get('/:id', authenticateToken, (req, res) => {
   const device = db.prepare(`
     SELECT d.*, g.name as group_name,
       cp.name as current_playlist_name,
+      cp.playlist_type as current_playlist_type,
       ap.name as assigned_playlist_name,
+      ap.playlist_type as assigned_playlist_type,
       gp.name as group_default_playlist_name,
+      gp.playlist_type as group_default_playlist_type,
       COALESCE(cp.name, ap.name, gp.name) as playlist_name,
       COALESCE(cp.name, ap.name, gp.name) as playback_playlist_name,
       CASE
@@ -266,7 +284,7 @@ router.post('/register', (req, res) => {
 });
 
 router.put('/:id', authenticateToken, requireManagementAccess, (req, res) => {
-  const { name, group_id, orientation, display_rotation, assigned_playlist_id, settings, tags,
+  const { name, group_id, player_mode, orientation, display_rotation, assigned_playlist_id, settings, tags,
           location_name, location_address, location_city, location_state,
           location_zip, location_country, location_lat, location_lng, location_notes } = req.body;
   const device = db.prepare('SELECT * FROM devices WHERE id = ?').get(req.params.id);
@@ -274,11 +292,13 @@ router.put('/:id', authenticateToken, requireManagementAccess, (req, res) => {
 
   const updates = [];
   const params = [];
+  const nextPlayerMode = player_mode !== undefined ? normalizePlayerMode(player_mode) : normalizePlayerMode(device.player_mode);
   let nextSettings = settings !== undefined ? { ...(settings || {}) } : JSON.parse(device.settings || '{}');
   let shouldUpdateSettings = settings !== undefined;
 
   if (name !== undefined) { updates.push('name = ?'); params.push(name); }
   if (group_id !== undefined) { updates.push('group_id = ?'); params.push(group_id); }
+  if (player_mode !== undefined) { updates.push('player_mode = ?'); params.push(nextPlayerMode); }
   if (orientation !== undefined || display_rotation !== undefined) {
     const rotation = getDisplayRotation(display_rotation ?? orientation);
     updates.push('orientation = ?');
@@ -286,7 +306,26 @@ router.put('/:id', authenticateToken, requireManagementAccess, (req, res) => {
     nextSettings = { ...nextSettings, display_rotation: rotation.value };
     shouldUpdateSettings = true;
   }
-  if (assigned_playlist_id !== undefined) { updates.push('assigned_playlist_id = ?'); params.push(assigned_playlist_id); }
+  let nextAssignedPlaylistId = assigned_playlist_id !== undefined ? assigned_playlist_id : device.assigned_playlist_id;
+  if (player_mode !== undefined && assigned_playlist_id === undefined && device.assigned_playlist_id) {
+    const currentPlaylist = db.prepare('SELECT * FROM playlists WHERE id = ?').get(device.assigned_playlist_id);
+    if (currentPlaylist && !playlistMatchesPlayerMode(currentPlaylist, nextPlayerMode)) {
+      nextAssignedPlaylistId = null;
+      updates.push('assigned_playlist_id = NULL');
+    }
+  }
+  if (nextAssignedPlaylistId) {
+    const playlist = db.prepare('SELECT * FROM playlists WHERE id = ?').get(nextAssignedPlaylistId);
+    if (!playlist) return res.status(400).json({ error: 'Assigned playlist not found' });
+    if (!playlistMatchesPlayerMode(playlist, nextPlayerMode)) {
+      return res.status(400).json({
+        error: nextPlayerMode === 'stream'
+          ? 'Camera Wall displays can only be assigned Camera Wall playlists'
+          : 'Media Displays can only be assigned Media playlists',
+      });
+    }
+  }
+  if (assigned_playlist_id !== undefined) { updates.push('assigned_playlist_id = ?'); params.push(assigned_playlist_id || null); }
   if (shouldUpdateSettings) { updates.push('settings = ?'); params.push(JSON.stringify(nextSettings)); }
   if (tags !== undefined) { updates.push('tags = ?'); params.push(JSON.stringify(tags)); }
   if (location_name !== undefined) { updates.push('location_name = ?'); params.push(location_name); }
@@ -326,6 +365,15 @@ router.put('/:id', authenticateToken, requireManagementAccess, (req, res) => {
     });
   }
 
+  if (player_mode !== undefined) {
+    const io = req.app.get('io');
+    io.to(`device:${req.params.id}`).emit('command', {
+      command: 'refresh_config',
+      params: { player_mode: updated.player_mode },
+    });
+    io.to(`device:${req.params.id}`).emit('command', { command: 'refresh' });
+  }
+
   if (group_id !== undefined && assigned_playlist_id === undefined) {
     refreshDevices(req.app.get('io'), [req.params.id], 'device_group_updated');
   }
@@ -341,6 +389,7 @@ router.put('/:id', authenticateToken, requireManagementAccess, (req, res) => {
       orientation: updated.orientation,
       display_rotation: updated.display_rotation,
       assigned_playlist_id: assigned_playlist_id !== undefined ? assigned_playlist_id : undefined,
+      player_mode: player_mode !== undefined ? nextPlayerMode : undefined,
       group_id: group_id !== undefined ? group_id : undefined,
     },
   });
