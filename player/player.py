@@ -28,7 +28,7 @@ import psutil
 from config import load_config, save_config, CACHE_DIR, LOG_DIR
 
 CONTENT_SERVER_PORT = 8889
-PLAYER_VERSION = '1.5.3'
+PLAYER_VERSION = '1.5.4'
 STREAM_LOG_PATH = os.path.join(LOG_DIR, 'stream-player.log')
 UPDATE_FILES = {
     'player.py',
@@ -760,7 +760,7 @@ class SignITPlayer:
                 filename = item.get('filename', '')
                 slides_html += f'''<div class="slide" data-duration="{item.get('duration', 30)}" style="display:{visible}"><iframe src="{filename}" style="width:100%;height:100%;border:none;"></iframe></div>'''
 
-        html = f'''<!DOCTYPE html>
+        page_html = f'''<!DOCTYPE html>
 <html><head>
 <meta charset="UTF-8">
 <style>
@@ -848,7 +848,7 @@ html,body{{width:100%;height:100%;overflow:hidden;background:{bg_color}}}
 
         display_path = os.path.join(CACHE_DIR, 'display.html')
         with open(display_path, 'w') as f:
-            f.write(html)
+            f.write(page_html)
         log.info('Display HTML generated')
 
     def _write_simple_screen(self, title, message, background='#09090b'):
