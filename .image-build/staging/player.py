@@ -28,7 +28,7 @@ import psutil
 from config import load_config, save_config, CACHE_DIR, LOG_DIR
 
 CONTENT_SERVER_PORT = 8889
-PLAYER_VERSION = '1.5.4'
+PLAYER_VERSION = '1.5.5'
 STREAM_LOG_PATH = os.path.join(LOG_DIR, 'stream-player.log')
 UPDATE_FILES = {
     'player.py',
@@ -252,6 +252,10 @@ class SignITPlayer:
                     self._set_display_power('off')
                     return
                 self._ensure_chromium_alive()
+                initial_stream_url = self._initial_stream_url(playlist)
+                if initial_stream_url and not self.active_stream_url:
+                    log.info(f'Ensuring initial RTSP/RTSPS stream is playing: {self._mask_stream_url(initial_stream_url)}')
+                    self._start_stream_player(initial_stream_url)
                 return
 
             log.info(f'Loading playlist: {playlist["name"]} ({len(playlist.get("items", []))} items)')
@@ -268,6 +272,10 @@ class SignITPlayer:
             self._download_assets(playlist.get('items', []))
             self._generate_display_html(playlist)
             self._launch_chromium()
+            initial_stream_url = self._initial_stream_url(playlist)
+            if initial_stream_url:
+                log.info(f'Starting initial RTSP/RTSPS stream directly: {self._mask_stream_url(initial_stream_url)}')
+                self._start_stream_player(initial_stream_url)
 
         except Exception as e:
             log.error(f'Content refresh failed: {e}')
@@ -469,6 +477,18 @@ class SignITPlayer:
 
     def _is_rtsp_stream(self, url):
         return str(url or '').strip().lower().startswith(('rtsp://', 'rtsps://'))
+
+    def _stream_url_for_item(self, item):
+        if item.get('asset_type') not in ('url', 'stream'):
+            return None
+        url = str(item.get('url') or '').strip()
+        return url if self._is_rtsp_stream(url) else None
+
+    def _initial_stream_url(self, playlist):
+        items = playlist.get('items', []) if playlist else []
+        if not items:
+            return None
+        return self._stream_url_for_item(items[0])
 
     def _find_executable(self, candidates):
         for candidate in candidates:
@@ -749,8 +769,9 @@ class SignITPlayer:
             elif asset_type == 'video':
                 filename = item.get('filename', '')
                 slides_html += f'''<div class="slide" data-duration="{int(vid_dur)}" data-type="video" style="display:{visible}"><video src="{filename}" {muted} autoplay playsinline preload="auto" {loop_attr} style="object-fit:{fit};width:100%;height:100%;"></video></div>'''
-            elif asset_type in ('url', 'stream') and self._is_rtsp_stream(item.get('url', '')):
-                url = html.escape(item.get('url', ''), quote=True)
+            elif self._stream_url_for_item(item):
+                url = html.escape(self._stream_url_for_item(item), quote=True)
+                log.info(f'Detected RTSP/RTSPS playlist item: {self._mask_stream_url(item.get("url", ""))}')
                 slides_html += f'''<div class="slide stream-slide" data-duration="{item.get('duration', 30)}" data-stream-url="{url}" style="display:{visible}"><div class="stream-card"><div class="stream-dot"></div><h1>Camera Stream</h1><p>Connecting to RTSP feed...</p></div></div>'''
             elif asset_type in ('url', 'stream'):
                 url = item.get('url', '')

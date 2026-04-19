@@ -267,7 +267,7 @@ Active: active (running)
 It should also show JSON for the player manifest:
 
 ```json
-{"version":"1.5.4","files":["player.py","config.py","setup_server.py","setup_tui.py","requirements.txt","setup_ui/index.html"]}
+{"version":"1.5.5","files":["player.py","config.py","setup_server.py","setup_tui.py","requirements.txt","setup_ui/index.html"]}
 ```
 
 The exact version changes over time. The important part is that it is JSON and includes `player.py`. If this returns HTML, the server is not serving the API route correctly.
@@ -394,7 +394,7 @@ How it works:
 - Admins and editors can update all outdated Pis from the Displays page.
 - Online Pis receive the update command immediately.
 - Offline Pis are queued and receive the update the next time they reconnect.
-- Player version `1.5.4` and newer includes hardened RTSP/RTSPS camera playback plus OTA update progress. The player tries `ffplay` with TCP first, then falls back to `mpv`, writes stream diagnostics to `/opt/signit/logs/stream-player.log`, and reports update percent/ETA back to the dashboard.
+- Player version `1.5.5` and newer includes hardened RTSP/RTSPS camera playback plus OTA update progress. The player tries `ffplay` with TCP first, then falls back to `mpv`, writes stream diagnostics to `/opt/signit/logs/stream-player.log`, and reports update percent/ETA back to the dashboard.
 
 Important bootstrap note:
 
