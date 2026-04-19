@@ -28,7 +28,7 @@ import psutil
 from config import load_config, save_config, CACHE_DIR, LOG_DIR
 
 CONTENT_SERVER_PORT = 8889
-PLAYER_VERSION = '1.5.5'
+PLAYER_VERSION = '1.5.6'
 STREAM_LOG_PATH = os.path.join(LOG_DIR, 'stream-player.log')
 UPDATE_FILES = {
     'player.py',
@@ -251,8 +251,16 @@ class SignITPlayer:
                     self._stop_stream_player()
                     self._set_display_power('off')
                     return
-                self._ensure_chromium_alive()
                 initial_stream_url = self._initial_stream_url(playlist)
+                if self._is_stream_only_playlist(playlist):
+                    if self.chromium_proc and self.chromium_proc.poll() is None:
+                        self._stop_chromium()
+                    if not self.active_stream_url:
+                        log.info(f'Ensuring native-only RTSP/RTSPS stream is playing: {self._mask_stream_url(initial_stream_url)}')
+                        self._start_stream_player(initial_stream_url)
+                    return
+
+                self._ensure_chromium_alive()
                 if initial_stream_url and not self.active_stream_url:
                     log.info(f'Ensuring initial RTSP/RTSPS stream is playing: {self._mask_stream_url(initial_stream_url)}')
                     self._start_stream_player(initial_stream_url)
@@ -269,10 +277,17 @@ class SignITPlayer:
 
             self._set_display_power('on')
             self._stop_stream_player()
+            initial_stream_url = self._initial_stream_url(playlist)
+            if self._is_stream_only_playlist(playlist):
+                self._stop_chromium()
+                log.info(f'Starting native-only RTSP/RTSPS playlist: {self._mask_stream_url(initial_stream_url)}')
+                if self._start_stream_player(initial_stream_url):
+                    return
+                log.warning('Native RTSP/RTSPS playback failed; falling back to browser placeholder')
+
             self._download_assets(playlist.get('items', []))
             self._generate_display_html(playlist)
             self._launch_chromium()
-            initial_stream_url = self._initial_stream_url(playlist)
             if initial_stream_url:
                 log.info(f'Starting initial RTSP/RTSPS stream directly: {self._mask_stream_url(initial_stream_url)}')
                 self._start_stream_player(initial_stream_url)
@@ -490,6 +505,10 @@ class SignITPlayer:
             return None
         return self._stream_url_for_item(items[0])
 
+    def _is_stream_only_playlist(self, playlist):
+        items = playlist.get('items', []) if playlist else []
+        return len(items) == 1 and bool(self._stream_url_for_item(items[0]))
+
     def _find_executable(self, candidates):
         for candidate in candidates:
             resolved = candidate if os.path.isabs(candidate) else shutil.which(candidate)
@@ -690,6 +709,16 @@ class SignITPlayer:
             self.stream_log_file.close()
             self.stream_log_file = None
         self.active_stream_url = None
+
+    def _stop_chromium(self):
+        if self.chromium_proc and self.chromium_proc.poll() is None:
+            log.info('Stopping Chromium for native stream playback')
+            self.chromium_proc.terminate()
+            try:
+                self.chromium_proc.wait(timeout=5)
+            except Exception:
+                self.chromium_proc.kill()
+        self.chromium_proc = None
 
     def _ensure_stream_player_alive(self):
         if self.active_stream_url and self.stream_proc and self.stream_proc.poll() is not None:
