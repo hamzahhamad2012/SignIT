@@ -28,7 +28,7 @@ import psutil
 from config import load_config, save_config, CACHE_DIR, LOG_DIR
 
 CONTENT_SERVER_PORT = 8889
-PLAYER_VERSION = '1.6.1'
+PLAYER_VERSION = '1.6.2'
 STREAM_LOG_PATH = os.path.join(LOG_DIR, 'stream-player.log')
 UPDATE_FILES = {
     'player.py',
@@ -644,6 +644,8 @@ class SignITPlayer:
             ]
             if fullscreen:
                 cmd.extend(['-fs', '-alwaysontop'])
+            else:
+                cmd.extend(['-left', str(int(tile.get('x', 0))), '-top', str(int(tile.get('y', 0)))])
             cmd.append(url)
             yield 'ffplay', cmd
 
@@ -679,7 +681,7 @@ class SignITPlayer:
             env['SDL_VIDEO_WINDOW_POS'] = f'{int(tile.get("x", 0))},{int(tile.get("y", 0))}'
         return env
 
-    def _force_stream_window_tile(self, title, tile, proc=None):
+    def _force_stream_window_tile(self, title, tile, proc=None, attempts=10, delay=0.5):
         """Keep native stream-player windows snapped to their Camera Wall tile."""
         if not tile:
             return False
@@ -693,10 +695,10 @@ class SignITPlayer:
         search_patterns = []
         if proc:
             search_patterns.append(('pid', ['xdotool', 'search', '--pid', str(proc.pid)]))
-        search_patterns.append(('name', ['xdotool', 'search', '--name', title]))
+        search_patterns.append(('name', ['xdotool', 'search', '--name', f'^{title}$']))
 
-        for attempt in range(10):
-            time.sleep(0.5)
+        for attempt in range(attempts):
+            time.sleep(delay)
             try:
                 window_ids = []
                 for search_kind, search_cmd in search_patterns:
@@ -771,6 +773,7 @@ class SignITPlayer:
             tiles.append({
                 'item': item,
                 'url': self._stream_url_for_item(item),
+                'index': idx,
                 'label': item.get('asset_name') or f'Camera {idx + 1}',
                 'x': gap + col * (cell_w + gap),
                 'y': gap + row * (cell_h + gap),
@@ -781,7 +784,11 @@ class SignITPlayer:
         return tiles
 
     def _start_stream_process(self, url, tile=None, label='Camera'):
-        title = f'SignIT {label}'[:80]
+        if tile:
+            tile_number = int(tile.get('index', 0)) + 1
+            title = f'SignIT-CW-{os.getpid()}-{tile_number}'
+        else:
+            title = f'SignIT {label}'[:80]
         failures = []
         for kind, cmd in self._stream_player_commands(url, tile=tile, title=title):
             log_file = None
@@ -802,7 +809,7 @@ class SignITPlayer:
                             args=(title, tile, proc),
                             daemon=True,
                         ).start()
-                    return {'proc': proc, 'log_file': log_file, 'kind': kind, 'url': url, 'tile': tile, 'label': label}
+                    return {'proc': proc, 'log_file': log_file, 'kind': kind, 'url': url, 'tile': tile, 'label': label, 'title': title}
                 exit_code = proc.returncode
                 failures.append(f'{kind} exited with code {exit_code}')
                 log.warning(f'{label} failed to stay open with {kind} (exit {exit_code})')
@@ -858,6 +865,8 @@ class SignITPlayer:
             self.active_stream_url = None
             self.stream_proc = started[0]['proc'] if len(started) == 1 else None
             self.stream_player_kind = ','.join(sorted({entry['kind'] for entry in started}))
+            if len(started) > 1:
+                threading.Thread(target=self._settle_stream_wall_tiles, args=(started,), daemon=True).start()
             self._emit_player_status(stream_status='playing', stream_player=self.stream_player_kind, stream_count=len(started))
             return True
         except Exception as e:
@@ -937,6 +946,17 @@ class SignITPlayer:
         self._emit_player_status(stream_status='failed', stream_error=error[-900:])
         self.active_stream_url = None
         return False
+
+    def _settle_stream_wall_tiles(self, entries):
+        """Re-apply tile geometry after players finish opening and decoding."""
+        for _ in range(4):
+            time.sleep(1.5)
+            for entry in list(entries):
+                proc = entry.get('proc')
+                tile = entry.get('tile')
+                if not tile or not proc or proc.poll() is not None:
+                    continue
+                self._force_stream_window_tile(entry.get('title') or entry.get('label') or 'SignIT Camera', tile, proc, attempts=1, delay=0)
 
     def _stop_stream_player(self):
         tracked_wall_procs = {id(entry.get('proc')) for entry in self.stream_procs}
