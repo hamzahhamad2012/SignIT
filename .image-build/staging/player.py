@@ -28,7 +28,7 @@ import psutil
 from config import load_config, save_config, CACHE_DIR, LOG_DIR
 
 CONTENT_SERVER_PORT = 8889
-PLAYER_VERSION = '1.6.2'
+PLAYER_VERSION = '1.6.3'
 STREAM_LOG_PATH = os.path.join(LOG_DIR, 'stream-player.log')
 UPDATE_FILES = {
     'player.py',
@@ -644,8 +644,6 @@ class SignITPlayer:
             ]
             if fullscreen:
                 cmd.extend(['-fs', '-alwaysontop'])
-            else:
-                cmd.extend(['-left', str(int(tile.get('x', 0))), '-top', str(int(tile.get('y', 0)))])
             cmd.append(url)
             yield 'ffplay', cmd
 
@@ -695,7 +693,7 @@ class SignITPlayer:
         search_patterns = []
         if proc:
             search_patterns.append(('pid', ['xdotool', 'search', '--pid', str(proc.pid)]))
-        search_patterns.append(('name', ['xdotool', 'search', '--name', f'^{title}$']))
+        search_patterns.append(('name', ['xdotool', 'search', '--name', title]))
 
         for attempt in range(attempts):
             time.sleep(delay)
