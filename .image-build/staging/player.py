@@ -28,7 +28,7 @@ import psutil
 from config import load_config, save_config, CACHE_DIR, LOG_DIR
 
 CONTENT_SERVER_PORT = 8889
-PLAYER_VERSION = '1.6.0'
+PLAYER_VERSION = '1.6.1'
 STREAM_LOG_PATH = os.path.join(LOG_DIR, 'stream-player.log')
 UPDATE_FILES = {
     'player.py',
@@ -679,6 +679,50 @@ class SignITPlayer:
             env['SDL_VIDEO_WINDOW_POS'] = f'{int(tile.get("x", 0))},{int(tile.get("y", 0))}'
         return env
 
+    def _force_stream_window_tile(self, title, tile, proc=None):
+        """Keep native stream-player windows snapped to their Camera Wall tile."""
+        if not tile:
+            return False
+
+        env = os.environ.copy()
+        env.setdefault('DISPLAY', ':0')
+        x = str(int(tile.get('x', 0)))
+        y = str(int(tile.get('y', 0)))
+        width = str(max(1, int(tile.get('w', 1))))
+        height = str(max(1, int(tile.get('h', 1))))
+        search_patterns = []
+        if proc:
+            search_patterns.append(('pid', ['xdotool', 'search', '--pid', str(proc.pid)]))
+        search_patterns.append(('name', ['xdotool', 'search', '--name', title]))
+
+        for attempt in range(10):
+            time.sleep(0.5)
+            try:
+                window_ids = []
+                for search_kind, search_cmd in search_patterns:
+                    result = subprocess.run(search_cmd, capture_output=True, text=True, env=env, timeout=5)
+                    ids = [wid for wid in result.stdout.strip().split('\n') if wid]
+                    if ids:
+                        window_ids = ids
+                        log.info(f'Found stream window for {title} by {search_kind}: {window_ids[-1]}')
+                        break
+
+                if not window_ids:
+                    log.info(f'xdotool: no stream window for {title} yet (attempt {attempt + 1})')
+                    continue
+
+                for wid in window_ids[-1:]:
+                    subprocess.run(['xdotool', 'windowmove', '--sync', wid, x, y], env=env, capture_output=True, timeout=5)
+                    subprocess.run(['xdotool', 'windowsize', '--sync', wid, width, height], env=env, capture_output=True, timeout=5)
+                    subprocess.run(['xdotool', 'windowmove', '--sync', wid, x, y], env=env, capture_output=True, timeout=5)
+                log.info(f'Forced stream window {title} to {width}x{height}+{x}+{y} via xdotool')
+                return True
+            except Exception as e:
+                log.warning(f'xdotool stream tile attempt {attempt + 1} failed for {title}: {e}')
+
+        log.warning(f'xdotool: gave up positioning stream window {title}')
+        return False
+
     def _camera_wall_layout(self, playlist):
         items = self._stream_items_for_playlist(playlist)
         config = playlist.get('layout_config') or {}
@@ -752,6 +796,12 @@ class SignITPlayer:
                 )
                 time.sleep(1.5)
                 if proc.poll() is None:
+                    if tile:
+                        threading.Thread(
+                            target=self._force_stream_window_tile,
+                            args=(title, tile, proc),
+                            daemon=True,
+                        ).start()
                     return {'proc': proc, 'log_file': log_file, 'kind': kind, 'url': url, 'tile': tile, 'label': label}
                 exit_code = proc.returncode
                 failures.append(f'{kind} exited with code {exit_code}')
