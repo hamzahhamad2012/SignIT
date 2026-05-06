@@ -28,9 +28,10 @@ import psutil
 from config import load_config, save_config, CACHE_DIR, LOG_DIR
 
 CONTENT_SERVER_PORT = 8889
-PLAYER_VERSION = '1.6.7'
+PLAYER_VERSION = '1.6.8'
 STREAM_LOG_PATH = os.path.join(LOG_DIR, 'stream-player.log')
 CHROMIUM_LOG_PATH = os.path.join(LOG_DIR, 'chromium.log')
+CHROMIUM_DEFAULT_FLAGS = '/etc/chromium.d/default-flags'
 BLACK_SCREEN_CHECK_INTERVAL = 30
 BLACK_SCREEN_RECOVERY_COOLDOWN = 90
 UPDATE_FILES = {
@@ -83,6 +84,7 @@ class SignITPlayer:
         self.last_black_screen_recovery = 0
         self.sio = socketio.Client(reconnection=True, reconnection_delay=5)
         self._setup_socket()
+        self._repair_chromium_defaults()
 
     def _setup_socket(self):
         @self.sio.event
@@ -1611,6 +1613,8 @@ html,body{{width:100%;height:100%;overflow:hidden;background:{bg_color}}}
     def _find_chromium(self):
         """Find Chromium binary path."""
         candidates = [
+            '/usr/lib/chromium/chromium',
+            '/usr/lib/chromium-browser/chromium-browser',
             '/usr/bin/chromium-browser',
             '/usr/bin/chromium',
             '/usr/bin/google-chrome',
@@ -1620,6 +1624,29 @@ html,body{{width:100%;height:100%;overflow:hidden;background:{bg_color}}}
             if os.path.exists(c):
                 return c
         return None
+
+    def _repair_chromium_defaults(self):
+        """Neutralize broken distro wrapper defaults that can make Chromium exit before launch."""
+        try:
+            if not os.path.exists(CHROMIUM_DEFAULT_FLAGS):
+                return
+            with open(CHROMIUM_DEFAULT_FLAGS, 'r') as f:
+                content = f.read()
+            if 'CHROMIUM_FLAGS' in content and ('(' in content or ')' in content):
+                backup = f'{CHROMIUM_DEFAULT_FLAGS}.signit-broken'
+                if not os.path.exists(backup):
+                    shutil.copy2(CHROMIUM_DEFAULT_FLAGS, backup)
+                replacement = (
+                    '# Repaired by SignIT: the previous file had invalid shell syntax and made Chromium exit.\n'
+                    'CHROMIUM_FLAGS=""\n'
+                )
+                with open(CHROMIUM_DEFAULT_FLAGS, 'w') as f:
+                    f.write(replacement)
+                log.warning(f'Repaired invalid Chromium default flags file: {CHROMIUM_DEFAULT_FLAGS}')
+        except PermissionError:
+            log.warning(f'Cannot repair {CHROMIUM_DEFAULT_FLAGS}; run sudo chmod or update image if Chromium wrapper still fails')
+        except Exception as e:
+            log.warning(f'Chromium default flags repair failed: {e}')
 
     def _force_fullscreen(self, screen_w, screen_h, attempts=8, delay=2, window_ids=None):
         """Use xdotool to force Chromium window to fill entire screen."""

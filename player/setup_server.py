@@ -19,7 +19,7 @@ from pathlib import Path
 CONFIG_FILE = '/opt/signit/config.json'
 SETUP_UI_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'setup_ui')
 SETUP_PORT = 8888
-PLAYER_VERSION = '1.6.7'
+PLAYER_VERSION = '1.6.8'
 
 
 def parse_nmcli_line(line):

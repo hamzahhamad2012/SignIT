@@ -182,8 +182,16 @@ xsetroot -solid black 2>/dev/null
 cd /opt/signit
 
 CHROMIUM=$(which chromium-browser 2>/dev/null || which chromium 2>/dev/null || echo chromium)
+if [ -x /usr/lib/chromium/chromium ]; then
+  CHROMIUM=/usr/lib/chromium/chromium
+fi
 VENV_PY=/opt/signit/venv/bin/python3
 CONF=/opt/signit/config.json
+
+if [ -f /etc/chromium.d/default-flags ]; then
+  cp /etc/chromium.d/default-flags /etc/chromium.d/default-flags.signit-original 2>/dev/null || true
+  printf '%s\n' '# Managed by SignIT; keep Chromium wrapper defaults shell-safe.' 'CHROMIUM_FLAGS=""' > /etc/chromium.d/default-flags
+fi
 
 # Detect actual screen resolution (critical for bare-X fullscreen)
 get_screen_size() {
