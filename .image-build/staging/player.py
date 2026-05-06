@@ -28,7 +28,7 @@ import psutil
 from config import load_config, save_config, CACHE_DIR, LOG_DIR
 
 CONTENT_SERVER_PORT = 8889
-PLAYER_VERSION = '1.6.3'
+PLAYER_VERSION = '1.6.4'
 STREAM_LOG_PATH = os.path.join(LOG_DIR, 'stream-player.log')
 UPDATE_FILES = {
     'player.py',
@@ -493,11 +493,33 @@ class SignITPlayer:
 
     def _ensure_chromium_alive(self):
         """Relaunch Chromium if it crashed or was killed."""
+        if not self.current_playlist:
+            return
+        if self._is_stream_playlist(self.current_playlist) or self._is_stream_only_playlist(self.current_playlist):
+            return
+
+        if not self._ensure_display_html():
+            return
+
         if self.chromium_proc and self.chromium_proc.poll() is not None:
             exit_code = self.chromium_proc.returncode
             log.warning(f'Chromium died (exit code {exit_code}), relaunching...')
             self.chromium_proc = None
             self._launch_chromium()
+            return
+
+        window_ids = self._chromium_window_ids()
+        if not window_ids:
+            log.warning('Chromium process is present but no kiosk window was found; relaunching browser session')
+            self._stop_chromium()
+            self._launch_chromium()
+            return
+
+        try:
+            screen_w, screen_h = self._get_screen_resolution()
+            self._force_fullscreen(screen_w, screen_h, attempts=1, delay=0, window_ids=window_ids)
+        except Exception as e:
+            log.warning(f'Chromium window health check could not verify fullscreen state: {e}')
 
     def _chromium_watchdog(self):
         """Continuously monitor Chromium and restart if it dies."""
@@ -1049,6 +1071,51 @@ class SignITPlayer:
             except Exception as e:
                 log.error(f'Download failed for {filename}: {e}')
 
+    def _ensure_display_html(self):
+        """Make sure the local kiosk page still exists for browser-rendered playlists."""
+        if not self.current_playlist:
+            return False
+
+        display_path = os.path.join(CACHE_DIR, 'display.html')
+        try:
+            if os.path.exists(display_path) and os.path.getsize(display_path) > 0:
+                return True
+        except OSError:
+            pass
+
+        try:
+            log.warning('display.html is missing or empty; regenerating the current playlist page')
+            self._download_assets(self.current_playlist.get('items', []))
+            self._generate_display_html(self.current_playlist)
+            return True
+        except Exception as e:
+            log.error(f'Could not regenerate display.html: {e}')
+            return False
+
+    def _chromium_window_ids(self):
+        """Return the currently visible Chromium window ids."""
+        env = os.environ.copy()
+        env.setdefault('DISPLAY', ':0')
+        seen = []
+        for command in (
+            ['xdotool', 'search', '--class', 'chromium'],
+            ['xdotool', 'search', '--class', 'Chromium'],
+        ):
+            try:
+                result = subprocess.run(
+                    command,
+                    capture_output=True, text=True, env=env, timeout=5
+                )
+                if result.returncode != 0:
+                    continue
+                for wid in result.stdout.strip().splitlines():
+                    wid = wid.strip()
+                    if wid and wid not in seen:
+                        seen.append(wid)
+            except Exception:
+                continue
+        return seen
+
     def _rotation_player_css(self):
         if not self.rotation_fallback:
             return '#player{position:fixed;inset:0;}'
@@ -1312,18 +1379,15 @@ html,body{{width:100%;height:100%;overflow:hidden;background:{bg_color}}}
                 return c
         return None
 
-    def _force_fullscreen(self, screen_w, screen_h):
+    def _force_fullscreen(self, screen_w, screen_h, attempts=8, delay=2, window_ids=None):
         """Use xdotool to force Chromium window to fill entire screen."""
         env = os.environ.copy()
         env.setdefault('DISPLAY', ':0')
-        for attempt in range(8):
-            time.sleep(2)
+        for attempt in range(attempts):
+            if delay:
+                time.sleep(delay)
             try:
-                result = subprocess.run(
-                    ['xdotool', 'search', '--class', 'chromium'],
-                    capture_output=True, text=True, env=env, timeout=10
-                )
-                wids = [w for w in result.stdout.strip().split('\n') if w]
+                wids = list(window_ids or self._chromium_window_ids())
                 if not wids:
                     log.info(f'xdotool: no chromium windows yet (attempt {attempt+1})')
                     continue
