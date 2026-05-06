@@ -14,7 +14,7 @@ Controls:
 import curses, subprocess, socket, time, threading, json, os, hashlib
 import urllib.request, urllib.error
 
-VERSION     = '1.3.0'
+VERSION     = '1.6.3'
 CONFIG_PATH = '/opt/signit/config.json'
 SETUP_DONE  = '/opt/signit/.setup-complete'
 
@@ -28,6 +28,44 @@ def _run(cmd, timeout=5):
         class _R:
             stdout = stderr = ''; returncode = 1
         return _R()
+
+
+def _run_root(cmd, timeout=5):
+    full_cmd = list(cmd)
+    if os.geteuid() != 0:
+        full_cmd = ['sudo'] + full_cmd
+    return _run(full_cmd, timeout=timeout)
+
+
+def _parse_nmcli_line(line):
+    fields = []
+    current = []
+    escaped = False
+    for ch in line.rstrip('\n'):
+        if escaped:
+            current.append(ch)
+            escaped = False
+        elif ch == '\\':
+            escaped = True
+        elif ch == ':':
+            fields.append(''.join(current))
+            current = []
+        else:
+            current.append(ch)
+    fields.append(''.join(current))
+    return fields
+
+
+def _conn_name(ssid):
+    return 'signit-' + hashlib.sha1(str(ssid or '').encode()).hexdigest()[:12]
+
+
+def ensure_wifi_ready():
+    _run_root(['rfkill', 'unblock', 'wifi'], timeout=5)
+    _run_root(['nmcli', 'radio', 'wifi', 'on'], timeout=8)
+    _run_root(['ip', 'link', 'set', 'wlan0', 'up'], timeout=5)
+    _run_root(['nmcli', 'dev', 'set', 'wlan0', 'managed', 'yes'], timeout=8)
+    time.sleep(1.5)
 
 def get_mac():
     for iface in ['eth0', 'wlan0', 'eth1']:
@@ -45,9 +83,9 @@ def get_net_info():
     r = _run(['hostname', '-I'])
     ips = r.stdout.strip().split()
     ip = ips[0] if ips else ''
-    r2 = _run(['nmcli', '-t', '-f', 'ACTIVE,SSID', 'dev', 'wifi'], timeout=3)
+    r2 = _run_root(['nmcli', '-t', '-f', 'ACTIVE,SSID', 'dev', 'wifi'], timeout=3)
     for line in r2.stdout.splitlines():
-        parts = line.split(':')
+        parts = _parse_nmcli_line(line)
         if len(parts) >= 2 and parts[0].lower() == 'yes' and parts[1].strip():
             ssid = parts[1].strip()
             break
@@ -55,30 +93,64 @@ def get_net_info():
 
 def scan_wifi():
     # Enable radio and bring interface up first
-    _run(['nmcli', 'radio', 'wifi', 'on'], timeout=5)
-    _run(['ip', 'link', 'set', 'wlan0', 'up'], timeout=3)
-    time.sleep(1)
-    r = _run(['nmcli', '-t', '-f', 'SSID,SIGNAL,IN-USE',
-              'dev', 'wifi', 'list', '--rescan', 'yes'], timeout=25)
+    ensure_wifi_ready()
+    r = _run_root(['nmcli', '-t', '-f', 'SSID,SIGNAL,SECURITY,IN-USE',
+                   'dev', 'wifi', 'list', '--rescan', 'yes'], timeout=25)
     seen, nets = set(), []
     for line in r.stdout.splitlines():
-        parts = line.split(':')
+        parts = _parse_nmcli_line(line)
         ssid = parts[0] if parts else ''
         if not ssid or ssid == '--' or ssid in seen:
             continue
         seen.add(ssid)
         sig    = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 0
-        active = len(parts) > 2 and '*' in parts[2]
-        nets.append((ssid, sig, active))
+        sec    = parts[2] if len(parts) > 2 else ''
+        active = len(parts) > 3 and '*' in parts[3]
+        nets.append((ssid, sig, active, sec))
     nets.sort(key=lambda x: (-x[2], -x[1]))
     return nets
 
-def wifi_connect(ssid, password=''):
-    cmd = ['nmcli', 'dev', 'wifi', 'connect', ssid]
+def _try_profile_connect(ssid, password, mode):
+    conn_name = _conn_name(ssid)
+    _run_root(['nmcli', 'connection', 'delete', conn_name], timeout=15)
+    added = _run_root(['nmcli', 'connection', 'add', 'type', 'wifi', 'ifname', 'wlan0', 'con-name', conn_name, 'ssid', ssid], timeout=20)
+    if added.returncode != 0:
+        return added
+    modify = ['nmcli', 'connection', 'modify', conn_name, 'connection.autoconnect', 'yes', 'ipv4.method', 'auto', 'ipv6.method', 'auto']
+    if mode == 'wep':
+        modify += ['wifi-sec.key-mgmt', 'none', 'wifi-sec.wep-key0', password]
+    elif mode == 'sae':
+        modify += ['wifi-sec.key-mgmt', 'sae', 'wifi-sec.psk', password]
+    elif mode == 'wpa-psk':
+        modify += ['wifi-sec.key-mgmt', 'wpa-psk', 'wifi-sec.psk', password]
+    mod = _run_root(modify, timeout=20)
+    if mod.returncode != 0:
+        return mod
+    return _run_root(['nmcli', '--wait', '30', 'connection', 'up', conn_name], timeout=45)
+
+
+def wifi_connect(ssid, password='', security=''):
+    ensure_wifi_ready()
+    attempts = []
+
+    direct = ['nmcli', '--wait', '30', 'dev', 'wifi', 'connect', ssid, 'ifname', 'wlan0']
     if password:
-        cmd += ['password', password]
-    r = _run(cmd, timeout=30)
-    return r.returncode == 0
+        direct += ['password', password]
+    r = _run_root(direct, timeout=45)
+    if r.returncode == 0:
+        return True, 'Connected'
+    attempts.append(r.stderr.strip() or r.stdout.strip() or 'Direct connect failed')
+
+    sec = (security or '').upper()
+    if password:
+        modes = ['wep'] if 'WEP' in sec else ['wpa-psk'] + (['sae'] if ('WPA3' in sec or 'SAE' in sec) else []) + ['wep']
+        for mode in modes:
+            result = _try_profile_connect(ssid, password, mode)
+            if result.returncode == 0:
+                return True, 'Connected'
+            attempts.append(result.stderr.strip() or result.stdout.strip() or f'{mode} failed')
+
+    return False, ' | '.join([msg for msg in attempts if msg]) or 'Connection failed'
 
 def load_cfg():
     try:
@@ -246,10 +318,11 @@ class App:
         elif not self.nets:
             self._a(s, 2, 4, '  No networks found — press F5 to scan again', P(4))
         else:
-            for i, (ssid, sig, active) in enumerate(self.nets[:h - 5]):
+            for i, (ssid, sig, active, sec) in enumerate(self.nets[:h - 5]):
                 bars  = '▰' * (sig // 20) + '▱' * (5 - sig // 20)
                 mark  = '→' if active else ' '
-                line  = f'  {mark} {ssid:<40} {bars} {sig}%'
+                lock  = ' 🔒' if sec and sec != '--' else ''
+                line  = f'  {mark} {ssid:<40} {bars} {sig}%{lock}'
                 attr  = (P(8) | curses.A_BOLD) if i == self.net_sel else (P(3) if active else 0)
                 self._a(s, 2 + i, 2, line[:w - 2], attr)
 
@@ -324,7 +397,7 @@ class App:
             self.net_sel = min(max(len(self.nets) - 1, 0), self.net_sel + 1)
         elif k in (curses.KEY_ENTER, 10, 13):
             if self.nets and self.net_sel < len(self.nets):
-                self._pending_ssid = self.nets[self.net_sel][0]
+                self._pending_ssid = self.nets[self.net_sel]
         elif k == curses.KEY_F5:
             self._start_scan()
 
@@ -378,8 +451,10 @@ class App:
             self.scanning = False
         threading.Thread(target=_do, daemon=True).start()
 
-    def run_wifi_dialog(self, s, ssid):
+    def run_wifi_dialog(self, s, ssid_info):
         """Password dialog — called from main loop (needs curses screen)."""
+        ssid = ssid_info[0]
+        security = ssid_info[3] if len(ssid_info) > 3 else ''
         h, w  = s.getmaxyx()
         dh, dw = 7, min(62, w - 4)
         dy, dx = max(0, (h - dh) // 2), max(0, (w - dw) // 2)
@@ -408,8 +483,8 @@ class App:
             pass
         win.refresh()
 
-        ok = wifi_connect(ssid, pwd)
-        result = f'  ✓  Connected to {ssid}' if ok else '  ✗  Connection failed — check password'
+        ok, msg = wifi_connect(ssid, pwd, security)
+        result = f'  ✓  Connected to {ssid}' if ok else f'  ✗  {msg[:dw - 8]}'
         try:
             win.addstr(5, 2, result[:dw - 4])
         except:
@@ -448,9 +523,9 @@ def _main(stdscr):
 
         # wifi password dialog needs the screen — handle here
         if app._pending_ssid:
-            ssid               = app._pending_ssid
+            ssid_info          = app._pending_ssid
             app._pending_ssid  = None
-            app.run_wifi_dialog(stdscr, ssid)
+            app.run_wifi_dialog(stdscr, ssid_info)
             continue
 
         app.key(k)

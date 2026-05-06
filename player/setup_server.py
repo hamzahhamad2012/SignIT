@@ -11,6 +11,7 @@ import socket
 import platform
 import time
 import threading
+import hashlib
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 from urllib.parse import urlparse
 from pathlib import Path
@@ -18,6 +19,57 @@ from pathlib import Path
 CONFIG_FILE = '/opt/signit/config.json'
 SETUP_UI_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'setup_ui')
 SETUP_PORT = 8888
+PLAYER_VERSION = '1.6.3'
+
+
+def parse_nmcli_line(line):
+    fields = []
+    current = []
+    escaped = False
+    for ch in line.rstrip('\n'):
+        if escaped:
+            current.append(ch)
+            escaped = False
+        elif ch == '\\':
+            escaped = True
+        elif ch == ':':
+            fields.append(''.join(current))
+            current = []
+        else:
+            current.append(ch)
+    fields.append(''.join(current))
+    return fields
+
+
+def run_cmd(cmd, timeout=10, require_root=False):
+    full_cmd = list(cmd)
+    if require_root and os.geteuid() != 0:
+        full_cmd = ['sudo'] + full_cmd
+    return subprocess.run(full_cmd, capture_output=True, text=True, timeout=timeout)
+
+
+def connection_name_for_ssid(ssid):
+    digest = hashlib.sha1(str(ssid or '').encode('utf-8')).hexdigest()[:12]
+    return f'signit-{digest}'
+
+
+def ensure_wifi_ready():
+    errors = []
+    steps = [
+        (['rfkill', 'unblock', 'wifi'], 5),
+        (['nmcli', 'radio', 'wifi', 'on'], 8),
+        (['ip', 'link', 'set', 'wlan0', 'up'], 5),
+        (['nmcli', 'dev', 'set', 'wlan0', 'managed', 'yes'], 8),
+    ]
+    for cmd, timeout in steps:
+        try:
+            result = run_cmd(cmd, timeout=timeout, require_root=True)
+            if result.returncode != 0 and result.stderr.strip():
+                errors.append(result.stderr.strip())
+        except Exception as e:
+            errors.append(str(e))
+    time.sleep(1.5)
+    return errors
 
 
 def load_config():
@@ -69,11 +121,12 @@ def check_internet():
 
 def get_wifi_ssid():
     try:
-        r = subprocess.run(
+        r = run_cmd(
             ['nmcli', '-t', '-f', 'ACTIVE,SSID', 'dev', 'wifi'],
-            capture_output=True, text=True, timeout=5)
+            timeout=5,
+            require_root=True)
         for line in r.stdout.splitlines():
-            parts = line.split(':')
+            parts = parse_nmcli_line(line)
             if len(parts) >= 2 and parts[0].lower() == 'yes' and parts[1].strip():
                 return parts[1].strip()
     except Exception:
@@ -88,18 +141,15 @@ def wifi_connected():
 def scan_wifi():
     networks = []
     try:
-        subprocess.run(['nmcli', 'radio', 'wifi', 'on'],
-                       capture_output=True, timeout=5)
-        subprocess.run(['ip', 'link', 'set', 'wlan0', 'up'],
-                       capture_output=True, timeout=3)
-        time.sleep(1)
-        result = subprocess.run(
+        ensure_wifi_ready()
+        result = run_cmd(
             ['nmcli', '-t', '-f', 'SSID,SIGNAL,SECURITY,IN-USE',
              'dev', 'wifi', 'list', '--rescan', 'yes'],
-            capture_output=True, text=True, timeout=20)
+            timeout=25,
+            require_root=True)
         seen = set()
         for line in result.stdout.splitlines():
-            parts = line.split(':')
+            parts = parse_nmcli_line(line)
             ssid = parts[0] if parts else ''
             if not ssid or ssid == '--' or ssid in seen:
                 continue
@@ -111,6 +161,7 @@ def scan_wifi():
                 'ssid': ssid,
                 'signal': sig,
                 'security': bool(sec and sec != '--'),
+                'security_label': sec if sec and sec != '--' else '',
                 'in_use': active,
             })
         networks.sort(key=lambda n: (-n.get('in_use', False), -n['signal']))
@@ -119,18 +170,90 @@ def scan_wifi():
     return networks
 
 
-def connect_wifi(ssid, password):
+def try_wifi_connect(cmd, timeout=40):
     try:
-        cmd = ['nmcli', 'dev', 'wifi', 'connect', ssid]
+        return run_cmd(cmd, timeout=timeout, require_root=True)
+    except Exception as e:
+        class Result:
+            returncode = 1
+            stdout = ''
+            stderr = str(e)
+        return Result()
+
+
+def try_profile_connect(ssid, password, mode):
+    conn_name = connection_name_for_ssid(ssid)
+    try_wifi_connect(['nmcli', 'connection', 'delete', conn_name], timeout=15)
+    add = try_wifi_connect(
+        ['nmcli', 'connection', 'add', 'type', 'wifi', 'ifname', 'wlan0', 'con-name', conn_name, 'ssid', ssid],
+        timeout=20,
+    )
+    if add.returncode != 0:
+        return add
+
+    base_modify = ['nmcli', 'connection', 'modify', conn_name, 'connection.autoconnect', 'yes', 'ipv4.method', 'auto', 'ipv6.method', 'auto']
+    if mode == 'open':
+        modify = base_modify
+    elif mode == 'wep':
+        modify = base_modify + ['wifi-sec.key-mgmt', 'none', 'wifi-sec.wep-key0', password]
+    elif mode == 'sae':
+        modify = base_modify + ['wifi-sec.key-mgmt', 'sae', 'wifi-sec.psk', password]
+    else:
+        modify = base_modify + ['wifi-sec.key-mgmt', 'wpa-psk', 'wifi-sec.psk', password]
+
+    mod = try_wifi_connect(modify, timeout=20)
+    if mod.returncode != 0:
+        return mod
+    return try_wifi_connect(['nmcli', '--wait', '30', 'connection', 'up', conn_name], timeout=45)
+
+
+def connect_wifi(ssid, password, security=''):
+    try:
+        prep_errors = ensure_wifi_ready()
+        attempts = []
+
+        def record(label, result):
+            attempts.append(f'{label}: {(result.stderr or result.stdout or "").strip()}'.strip())
+            return result.returncode == 0
+
+        direct = ['nmcli', '--wait', '30', 'dev', 'wifi', 'connect', ssid, 'ifname', 'wlan0']
         if password:
-            cmd += ['password', password]
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
-        if result.returncode == 0:
+            direct += ['password', password]
+        if record('direct', try_wifi_connect(direct)):
             time.sleep(2)
             if check_internet():
                 return {'success': True}
             return {'success': True, 'warning': 'Connected but no internet'}
-        return {'success': False, 'error': result.stderr.strip() or 'Connection failed'}
+
+        sec = (security or '').upper()
+        if password:
+            fallback_modes = []
+            if 'WEP' in sec:
+                fallback_modes.append('wep')
+            else:
+                fallback_modes.append('wpa-psk')
+                if 'WPA3' in sec or 'SAE' in sec:
+                    fallback_modes.append('sae')
+                fallback_modes.append('wep')
+
+            for mode in fallback_modes:
+                if record(mode, try_profile_connect(ssid, password, mode)):
+                    time.sleep(2)
+                    if check_internet():
+                        return {'success': True}
+                    return {'success': True, 'warning': 'Connected but no internet'}
+        else:
+            if record('open', try_profile_connect(ssid, '', 'open')):
+                time.sleep(2)
+                if check_internet():
+                    return {'success': True}
+                return {'success': True, 'warning': 'Connected but no internet'}
+
+        extra = ' | '.join(part for part in prep_errors if part)
+        error = ' ; '.join(part for part in attempts if part) or 'Connection failed'
+        if extra:
+            error = f'{error} ; setup: {extra}'
+        return {'success': False, 'error': error}
     except Exception as e:
         return {'success': False, 'error': str(e)}
 
@@ -156,7 +279,7 @@ def do_register(server_url):
         'resolution': resolution,
         'os_info': os_info,
         'mac_address': mac,
-        'player_version': '1.3.0',
+            'player_version': PLAYER_VERSION,
     }
 
     try:
@@ -247,7 +370,7 @@ class SetupHandler(SimpleHTTPRequestHandler):
             ssid = body.get('ssid', '')
             if not ssid:
                 return self._json({'success': False, 'error': 'SSID required'}, 400)
-            self._json(connect_wifi(ssid, body.get('password', '')))
+            self._json(connect_wifi(ssid, body.get('password', ''), body.get('security', '')))
 
         elif path == '/test-server':
             url = body.get('url', '').strip().rstrip('/')

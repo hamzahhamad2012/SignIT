@@ -63,7 +63,8 @@
       width: 100%; padding: 13px 14px; background: var(--bg); border: 1px solid var(--border);
       border-radius: 10px; color: var(--text); font-size: 15px; font-family: inherit; outline: none; transition: border-color 0.2s;
     }
-    .field input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-glow); }
+    .field input:focus,
+    .field input:focus-visible { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-glow); }
     .field input::placeholder { color: var(--text-muted); }
 
     .btn {
@@ -75,6 +76,7 @@
     .btn-primary:hover { filter: brightness(1.15); }
     .btn-primary:disabled { opacity: 0.5; }
     .btn-ghost { background: transparent; color: var(--text-dim); border: 1px solid var(--surface-3); }
+    .btn:focus-visible, .wifi-item:focus-visible { outline: none; box-shadow: 0 0 0 3px var(--accent-glow); border-color: var(--accent); }
 
     .msg { padding: 10px 14px; border-radius: 8px; font-size: 12px; margin-bottom: 14px; }
     .msg.err { background: rgba(239,68,68,0.1); color: #fca5a5; border: 1px solid rgba(239,68,68,0.2); }
@@ -102,7 +104,11 @@
     .success .info-row span:last-child { color: var(--text); font-weight: 500; }
 
     .wifi-list { max-height: 280px; overflow-y: auto; border: 1px solid var(--border); border-radius: 12px; margin-bottom: 14px; }
-    .wifi-item { display: flex; align-items: center; justify-content: space-between; padding: 12px 14px; border-bottom: 1px solid var(--border); cursor: pointer; transition: background 0.15s; }
+    .wifi-item {
+      display: flex; align-items: center; justify-content: space-between; width: 100%;
+      padding: 12px 14px; border: 0; border-bottom: 1px solid var(--border); cursor: pointer;
+      transition: background 0.15s; background: transparent; color: inherit; text-align: left;
+    }
     .wifi-item:last-child { border-bottom: none; }
     .wifi-item:hover, .wifi-item.sel { background: var(--surface-2); }
     .wifi-item .name { font-size: 14px; font-weight: 500; }
@@ -132,6 +138,7 @@
         <span><kbd>F6</kbd> Wi-Fi</span>
         <span><kbd>F2</kbd> Server Settings</span>
         <span><kbd>F5</kbd> Refresh</span>
+        <span><kbd>Tab</kbd>/<kbd>↑↓</kbd> Navigate</span>
       </div>
     </div>
     <div class="main" id="main"></div>
@@ -158,9 +165,13 @@
   <script>
     const API = 'http://localhost:8888';
     let state = { net: 'checking', ssid: '', ip: '', host: '' };
+    let wifiUi = { nets: [], target: 'step', index: 0 };
+    let pendingWifi = null;
+    let currentStep = 'wifi';
 
     async function get(p) { return (await fetch(API+p)).json(); }
     async function post(p, b) { return (await fetch(API+p, { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(b) })).json(); }
+    function escapeHtml(v) { return String(v ?? '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch])); }
 
     // ── Network status ──
     async function checkNet() {
@@ -178,6 +189,7 @@
 
     // ── WiFi ──
     async function scanWifi(t) {
+      wifiUi.target = t;
       const c = t === 'ov' ? document.getElementById('wifiOvContent') : document.getElementById('wifiStepContent');
       if (c) c.innerHTML = '<div class="loading-text"><div class="spinner"></div>Scanning...</div>';
       try {
@@ -188,27 +200,58 @@
     function renderWifi(c, nets, t) {
       if (!c) return;
       if (!nets.length) { c.innerHTML = '<div class="msg info">No networks found. Try again.</div>'; return; }
+      const currentIndex = Math.max(0, nets.findIndex(n => n.ssid === state.ssid));
+      wifiUi = { nets, target: t, index: currentIndex >= 0 ? currentIndex : 0 };
       c.innerHTML = '<div class="wifi-list">' + nets.map((n,i) => {
         const s = Math.min(4, Math.max(1, Math.ceil((n.signal+100)/25)));
         const bars = [1,2,3,4].map(b=>`<div class="b ${b<=s?'a':''}"></div>`).join('');
         const cur = n.ssid === state.ssid;
-        return `<div class="wifi-item ${cur?'sel':''}" onclick="pickWifi(${i},'${t}')"><div><div class="name">${n.ssid}${cur?' <small style="color:var(--green)">(current)</small>':''}</div></div><div class="meta">${n.security?'🔒':''}<div class="bars">${bars}</div></div></div>`;
+        return `<button type="button" class="wifi-item ${cur?'sel':''}" data-wifi-target="${t}" onclick="pickWifi(${i},'${t}')" onfocus="setWifiFocus(${i},'${t}')" onkeydown="wifiItemKey(event,${i},'${t}')" tabindex="${i === wifiUi.index ? 0 : -1}"><div><div class="name">${escapeHtml(n.ssid)}${cur?' <small style="color:var(--green)">(current)</small>':''}</div></div><div class="meta">${n.security?'🔒':''}${n.security_label ? `<span>${escapeHtml(n.security_label)}</span>` : ''}<div class="bars">${bars}</div></div></button>`;
       }).join('') + '</div>';
-      window._nets = nets;
+      setTimeout(() => focusWifiIndex(wifiUi.index, true), 0);
+    }
+    function focusWifiIndex(index, shouldFocus = true) {
+      const items = [...document.querySelectorAll(`.wifi-item[data-wifi-target="${wifiUi.target}"]`)];
+      if (!items.length) return;
+      wifiUi.index = Math.max(0, Math.min(items.length - 1, index));
+      items.forEach((item, i) => {
+        item.classList.toggle('sel', i === wifiUi.index);
+        item.tabIndex = i === wifiUi.index ? 0 : -1;
+      });
+      if (shouldFocus) items[wifiUi.index]?.focus();
+    }
+    function setWifiFocus(index, target) {
+      wifiUi.target = target;
+      focusWifiIndex(index, false);
+    }
+    function wifiItemKey(event, index, target) {
+      wifiUi.target = target;
+      if (event.key === 'ArrowDown') { event.preventDefault(); focusWifiIndex(index + 1); }
+      else if (event.key === 'ArrowUp') { event.preventDefault(); focusWifiIndex(index - 1); }
+      else if (event.key === 'Home') { event.preventDefault(); focusWifiIndex(0); }
+      else if (event.key === 'End') { event.preventDefault(); focusWifiIndex(wifiUi.nets.length - 1); }
+      else if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); pickWifi(index, target); }
     }
     async function pickWifi(i, t) {
-      const n = window._nets[i];
+      const n = wifiUi.nets[i];
       const c = t==='ov' ? document.getElementById('wifiOvContent') : document.getElementById('wifiStepContent');
-      if (!n.security) { await doConnect(n.ssid, '', c); return; }
-      c.innerHTML = `<div class="msg info">Connecting to <strong>${n.ssid}</strong></div><div class="field"><label>Password</label><input type="password" id="wfp" placeholder="Enter WiFi password" autofocus onkeydown="if(event.key==='Enter')doConnect('${n.ssid}',this.value,parentElement.parentElement)"></div><div style="display:flex;gap:8px;margin-top:12px"><button class="btn btn-ghost" onclick="scanWifi('${t}')">Back</button><button class="btn btn-primary" onclick="doConnect('${n.ssid}',document.getElementById('wfp').value,this.parentElement.parentElement)">Connect</button></div>`;
+      pendingWifi = { ssid: n.ssid, security: n.security_label || '', target: t };
+      if (!n.security) { await doConnect(n.ssid, '', c, n.security_label || ''); return; }
+      c.innerHTML = `<div class="msg info">Connecting to <strong>${escapeHtml(n.ssid)}</strong></div><div class="field"><label>Password</label><input type="password" id="wfp" placeholder="Enter WiFi password" autofocus onkeydown="if(event.key==='Enter')connectPendingWifi()"></div><div style="display:flex;gap:8px;margin-top:12px"><button class="btn btn-ghost" id="wifiBackBtn" onclick="scanWifi(pendingWifi.target)">Back</button><button class="btn btn-primary" id="wifiConnectBtn" onclick="connectPendingWifi()">Connect</button></div>`;
       setTimeout(()=>document.getElementById('wfp')?.focus(),100);
     }
-    async function doConnect(ssid, pw, c) {
-      c.innerHTML = '<div class="loading-text"><div class="spinner"></div>Connecting to '+ssid+'...</div>';
+    async function connectPendingWifi() {
+      if (!pendingWifi) return;
+      const c = pendingWifi.target === 'ov' ? document.getElementById('wifiOvContent') : document.getElementById('wifiStepContent');
+      const pw = document.getElementById('wfp')?.value || '';
+      await doConnect(pendingWifi.ssid, pw, c, pendingWifi.security || '');
+    }
+    async function doConnect(ssid, pw, c, security='') {
+      c.innerHTML = '<div class="loading-text"><div class="spinner"></div>Connecting to '+escapeHtml(ssid)+'...</div>';
       try {
-        const r = await post('/wifi/connect', {ssid, password:pw});
-        if (r.success) { c.innerHTML = `<div class="msg ok">Connected to <strong>${ssid}</strong>!</div>`; state.ssid = ssid; setTimeout(checkNet,2000); setTimeout(()=>showStep('server'),1500); }
-        else { c.innerHTML = `<div class="msg err">${r.error||'Failed'}</div><button class="btn btn-ghost" style="margin-top:8px" onclick="scanWifi('step')">Retry</button>`; }
+        const r = await post('/wifi/connect', {ssid, password:pw, security});
+        if (r.success) { c.innerHTML = `<div class="msg ok">Connected to <strong>${escapeHtml(ssid)}</strong>${r.warning ? `<br><small>${escapeHtml(r.warning)}</small>` : ''}</div>`; state.ssid = ssid; setTimeout(checkNet,2000); setTimeout(()=>showStep('server'),1500); }
+        else { c.innerHTML = `<div class="msg err">${escapeHtml(r.error||'Failed')}</div><button class="btn btn-ghost" style="margin-top:8px" onclick="scanWifi('${currentStep === 'wifi' ? 'step' : wifiUi.target}')">Retry</button>`; setTimeout(()=>document.querySelector('.btn')?.focus(),50); }
       } catch { c.innerHTML = '<div class="msg err">Connection failed</div>'; }
     }
     function openWifi() { document.getElementById('wifiOverlay').classList.remove('hidden'); scanWifi('ov'); }
@@ -216,6 +259,7 @@
 
     // ── Steps ──
     function showStep(s) {
+      currentStep = s;
       const m = document.getElementById('main');
       switch(s) {
         case 'wifi': renderWifiStep(m); break;
@@ -302,7 +346,13 @@
     // ── Keyboard ──
     document.addEventListener('keydown', e => {
       if (e.key === 'F6') { e.preventDefault(); const ov = document.getElementById('wifiOverlay'); if (ov.classList.contains('hidden')) openWifi(); else closeWifi(); }
-      if (e.key === 'F5') { e.preventDefault(); checkNet(); }
+      if (e.key === 'F5') {
+        e.preventDefault();
+        const ov = document.getElementById('wifiOverlay');
+        if (!ov.classList.contains('hidden')) scanWifi('ov');
+        else if (currentStep === 'wifi') scanWifi('step');
+        else checkNet();
+      }
       if (e.key === 'F2') { e.preventDefault(); showStep('server'); closeWifi(); }
       if (e.key === 'Escape') closeWifi();
     });

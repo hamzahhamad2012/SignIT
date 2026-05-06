@@ -4,6 +4,7 @@ set -e
 IMG_URL="https://downloads.raspberrypi.com/raspios_arm64/images/raspios_arm64-2024-11-19/2024-11-19-raspios-bookworm-arm64.img.xz"
 CACHE="/cache/raspios-desktop-arm64-20241119.img.xz"
 VERSION="v1"
+WIFI_COUNTRY="${SIGNIT_WIFI_COUNTRY:-US}"
 IMG="/work/signit-${VERSION}.img"
 SECTOR=512
 
@@ -103,6 +104,22 @@ if ! id signit >/dev/null 2>&1; then
 fi
 echo "signit:signit" | chpasswd
 echo "  ✓ signit user ready"
+
+# Set a sane default WiFi country so wlan0 is usable on first boot.
+if command -v raspi-config >/dev/null 2>&1; then
+  raspi-config nonint do_wifi_country "$WIFI_COUNTRY" 2>/dev/null || true
+fi
+mkdir -p /etc/NetworkManager/conf.d
+cat > /etc/NetworkManager/conf.d/10-signit-wifi.conf << 'NMEOF'
+[device]
+wifi.scan-rand-mac-address=no
+
+[connection]
+wifi.cloned-mac-address=preserve
+
+[wifi]
+powersave=2
+NMEOF
 
 # Nuke Pi OS first-boot user wizard (we already have our user)
 systemctl disable userconfig 2>/dev/null || true
@@ -318,18 +335,63 @@ systemctl enable ssh 2>/dev/null || true
 cat > /opt/signit/setup-wifi.sh << 'WIFISH'
 #!/bin/bash
 WIFI_FILE=/boot/firmware/signit-wifi.txt
+LOG_FILE=/opt/signit/logs/wifi-boot.log
 [ -f "$WIFI_FILE" ] || exit 0
 SSID=$(grep -E '^[[:space:]]*SSID=' "$WIFI_FILE" | head -1 | cut -d= -f2- | tr -d '\r\n')
 PASS=$(grep -E '^[[:space:]]*PASSWORD=' "$WIFI_FILE" | head -1 | cut -d= -f2- | tr -d '\r\n')
 [ -z "$SSID" ] && exit 0
-nmcli radio wifi on 2>/dev/null
+mkdir -p /opt/signit/logs
+exec >> "$LOG_FILE" 2>&1
+echo
+echo "=== SignIT boot WiFi: $(date) ==="
+echo "SSID: $SSID"
+CONN_NAME="signit-boot-$(printf '%s' "$SSID" | sha1sum | cut -c1-12)"
+rfkill unblock wifi 2>/dev/null || true
+nmcli radio wifi on 2>/dev/null || true
+ip link set wlan0 up 2>/dev/null || true
+nmcli dev set wlan0 managed yes 2>/dev/null || true
 sleep 2
-if [ -n "$PASS" ]; then
-  nmcli dev wifi connect "$SSID" password "$PASS" 2>&1 || true
-else
-  nmcli dev wifi connect "$SSID" 2>&1 || true
+
+connect_direct() {
+  if [ -n "$PASS" ]; then
+    nmcli --wait 30 dev wifi connect "$SSID" ifname wlan0 password "$PASS"
+  else
+    nmcli --wait 30 dev wifi connect "$SSID" ifname wlan0
+  fi
+}
+
+connect_profile() {
+  MODE="$1"
+  nmcli connection delete "$CONN_NAME" 2>/dev/null || true
+  nmcli connection add type wifi ifname wlan0 con-name "$CONN_NAME" ssid "$SSID" || return 1
+  if [ "$MODE" = "wep" ]; then
+    nmcli connection modify "$CONN_NAME" connection.autoconnect yes ipv4.method auto ipv6.method auto wifi-sec.key-mgmt none wifi-sec.wep-key0 "$PASS" || return 1
+  elif [ "$MODE" = "sae" ]; then
+    nmcli connection modify "$CONN_NAME" connection.autoconnect yes ipv4.method auto ipv6.method auto wifi-sec.key-mgmt sae wifi-sec.psk "$PASS" || return 1
+  else
+    nmcli connection modify "$CONN_NAME" connection.autoconnect yes ipv4.method auto ipv6.method auto wifi-sec.key-mgmt wpa-psk wifi-sec.psk "$PASS" || return 1
+  fi
+  nmcli --wait 30 connection up "$CONN_NAME"
+}
+
+SUCCESS=0
+connect_direct && SUCCESS=1 || true
+if [ "$SUCCESS" -ne 1 ] && [ -n "$PASS" ]; then
+  connect_profile wpa-psk && SUCCESS=1 || true
 fi
-mv -f "$WIFI_FILE" "${WIFI_FILE}.applied" 2>/dev/null || true
+if [ "$SUCCESS" -ne 1 ] && [ -n "$PASS" ]; then
+  connect_profile sae && SUCCESS=1 || true
+fi
+if [ "$SUCCESS" -ne 1 ] && [ -n "$PASS" ]; then
+  connect_profile wep && SUCCESS=1 || true
+fi
+
+if [ "$SUCCESS" -eq 1 ]; then
+  mv -f "$WIFI_FILE" "${WIFI_FILE}.applied" 2>/dev/null || true
+  echo "WiFi boot connect succeeded"
+else
+  echo "WiFi boot connect failed"
+fi
 WIFISH
 chmod +x /opt/signit/setup-wifi.sh
 
@@ -391,6 +453,7 @@ Boot 2: SignIT setup screen appears on your TV/monitor
 WiFi: Plug Ethernet OR copy signit-wifi.txt.example to signit-wifi.txt
       and fill in your SSID + PASSWORD before first boot.
       You can also press F6 on the setup screen.
+      Image default WiFi country: US
 
 SSH (optional): user=signit  password=signit
 RDME
