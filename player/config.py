@@ -13,6 +13,7 @@ DEFAULT_CONFIG = {
     'playlist_check_interval': 15,
     'screenshot_interval': 300,
     'resolution': '1920x1080',
+    'player_mode': 'media',
     'orientation': 'landscape',
     'display_rotation': 'landscape',
     'hdmi_mode': 'auto',
@@ -44,7 +45,7 @@ def ensure_dirs():
 
 PERSIST_KEYS = {
     'server_url', 'device_id', 'device_name', 'configured',
-    'resolution', 'orientation', 'display_rotation', 'hdmi_mode', 'overscan',
+    'resolution', 'player_mode', 'orientation', 'display_rotation', 'hdmi_mode', 'overscan',
     'audio_output', 'volume',
 }
 

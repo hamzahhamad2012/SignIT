@@ -28,7 +28,7 @@ import psutil
 from config import load_config, save_config, CACHE_DIR, LOG_DIR
 
 CONTENT_SERVER_PORT = 8889
-PLAYER_VERSION = '1.6.6'
+PLAYER_VERSION = '1.6.7'
 STREAM_LOG_PATH = os.path.join(LOG_DIR, 'stream-player.log')
 CHROMIUM_LOG_PATH = os.path.join(LOG_DIR, 'chromium.log')
 BLACK_SCREEN_CHECK_INTERVAL = 30
@@ -346,19 +346,22 @@ class SignITPlayer:
 
         previous_rotation = self.config.get('display_rotation') or self.config.get('orientation', 'landscape')
         previous_resolution = self.config.get('resolution')
+        previous_player_mode = self.config.get('player_mode', 'media')
         display_rotation = server_config.get('display_rotation') or server_config.get('orientation') or 'landscape'
         if display_rotation not in DISPLAY_ROTATIONS:
             display_rotation = 'landscape'
 
         rotation_info = DISPLAY_ROTATIONS[display_rotation]
         resolution = server_config.get('resolution') or previous_resolution
+        player_mode = server_config.get('player_mode') or previous_player_mode or 'media'
+        self.config['player_mode'] = player_mode
         self.config['display_rotation'] = display_rotation
         self.config['orientation'] = rotation_info['orientation']
         if resolution:
             self.config['resolution'] = resolution
         save_config(self.config)
 
-        changed = previous_rotation != display_rotation or previous_resolution != resolution
+        changed = previous_rotation != display_rotation or previous_resolution != resolution or previous_player_mode != player_mode
         if changed or force_restart:
             self._apply_orientation(display_rotation)
 
@@ -438,6 +441,12 @@ class SignITPlayer:
         rotation_info = DISPLAY_ROTATIONS.get(orientation, DISPLAY_ROTATIONS['landscape'])
         errors = []
 
+        if self._should_use_css_rotation(orientation):
+            self._normalize_hardware_rotation(env)
+            self.rotation_fallback = orientation if orientation != 'landscape' else False
+            log.info(f'Using CSS rotation for media player: {orientation}')
+            return True
+
         methods = []
         if env.get('WAYLAND_DISPLAY'):
             methods.append(self._apply_orientation_wlrandr)
@@ -456,6 +465,25 @@ class SignITPlayer:
 
         self.rotation_fallback = orientation if orientation != 'landscape' else False
         log.warning(f'Hardware display rotation failed, using CSS fallback: {"; ".join(errors)}')
+        return False
+
+    def _should_use_css_rotation(self, orientation):
+        """Browser media playback is more stable when X11 stays in native landscape."""
+        player_mode = self.config.get('player_mode', 'media')
+        return player_mode == 'media' and orientation != 'landscape'
+
+    def _normalize_hardware_rotation(self, env):
+        normal = DISPLAY_ROTATIONS['landscape']
+        methods = [self._apply_orientation_xrandr, self._apply_orientation_wlrandr]
+        errors = []
+        for method in methods:
+            try:
+                if method(normal, env):
+                    time.sleep(1)
+                    return True
+            except Exception as e:
+                errors.append(str(e))
+        log.warning(f'Could not normalize hardware rotation before CSS fallback: {"; ".join(errors)}')
         return False
 
     def _run_display_command(self, command, env=None):
