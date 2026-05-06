@@ -28,9 +28,10 @@ import psutil
 from config import load_config, save_config, CACHE_DIR, LOG_DIR
 
 CONTENT_SERVER_PORT = 8889
-PLAYER_VERSION = '1.6.9'
+PLAYER_VERSION = '1.6.10'
 STREAM_LOG_PATH = os.path.join(LOG_DIR, 'stream-player.log')
 CHROMIUM_LOG_PATH = os.path.join(LOG_DIR, 'chromium.log')
+DISPLAY_DIAGNOSTICS_PATH = os.path.join(LOG_DIR, 'display-diagnostics.json')
 CHROMIUM_DEFAULT_FLAGS = '/etc/chromium.d/default-flags'
 CHROMIUM_BACKUP_DIR = '/var/backups/signit/chromium.d'
 BLACK_SCREEN_CHECK_INTERVAL = 30
@@ -83,6 +84,7 @@ class SignITPlayer:
         self.display_power_state = 'on'
         self.black_screen_hits = 0
         self.last_black_screen_recovery = 0
+        self.force_software_chromium_until = 0
         self.sio = socketio.Client(reconnection=True, reconnection_delay=5)
         self._setup_socket()
         self._repair_chromium_defaults()
@@ -1126,6 +1128,10 @@ class SignITPlayer:
 
             cache_path = os.path.join(CACHE_DIR, filename)
             if os.path.exists(cache_path):
+                try:
+                    log.info(f'Asset cache ready: {filename} ({os.path.getsize(cache_path)} bytes)')
+                except OSError:
+                    log.info(f'Asset cache ready: {filename}')
                 continue
 
             try:
@@ -1133,10 +1139,11 @@ class SignITPlayer:
                 log.info(f'Downloading: {filename}')
                 r = requests.get(url, stream=True, timeout=120)
                 r.raise_for_status()
+                os.makedirs(os.path.dirname(cache_path), exist_ok=True)
                 with open(cache_path, 'wb') as f:
                     for chunk in r.iter_content(chunk_size=8192):
                         f.write(chunk)
-                log.info(f'Cached: {filename}')
+                log.info(f'Cached: {filename} ({os.path.getsize(cache_path)} bytes)')
             except Exception as e:
                 log.error(f'Download failed for {filename}: {e}')
 
@@ -1236,6 +1243,8 @@ class SignITPlayer:
     def _recover_from_black_screen(self):
         playlist_name = self.current_playlist.get('name', 'current playlist') if self.current_playlist else 'current playlist'
         log.error(f'Recovering black display while playing {playlist_name}')
+        self.force_software_chromium_until = time.time() + 900
+        log.warning('Black-screen recovery will force Chromium software rendering for 15 minutes')
         current = self.current_playlist
         self._set_display_power('on')
         self._stop_chromium()
@@ -1269,6 +1278,26 @@ class SignITPlayer:
             return '#player{position:fixed;inset:0;transform:rotate(180deg);transform-origin:center center;}'
         return '#player{position:fixed;inset:0;}'
 
+    def _asset_local_src(self, filename):
+        return urllib.parse.quote(str(filename or ''), safe='/._-')
+
+    def _asset_remote_src(self, filename):
+        return f'{self.server_url}/api/player/asset/{urllib.parse.quote(str(filename or ""), safe="")}'
+
+    def _asset_status(self, item):
+        filename = item.get('filename')
+        if not filename:
+            return {'filename': None, 'cached': False, 'size': 0}
+        cache_path = os.path.join(CACHE_DIR, filename)
+        try:
+            return {
+                'filename': filename,
+                'cached': os.path.exists(cache_path),
+                'size': os.path.getsize(cache_path) if os.path.exists(cache_path) else 0,
+            }
+        except OSError:
+            return {'filename': filename, 'cached': False, 'size': 0}
+
     def _generate_display_html(self, playlist):
         """Generate the HTML file that Chromium will display."""
         items = playlist.get('items', [])
@@ -1279,6 +1308,14 @@ class SignITPlayer:
         player_css = self._rotation_player_css()
 
         single_item = len(items) == 1
+        diagnostics = {
+            'generated_at': datetime.utcnow().isoformat() + 'Z',
+            'playlist_id': playlist.get('id'),
+            'playlist_name': playlist.get('name'),
+            'rotation_fallback': self.rotation_fallback,
+            'player_mode': self.config.get('player_mode', 'media'),
+            'items': [],
+        }
         slides_html = ''
         for i, item in enumerate(items):
             asset_type = item.get('asset_type', 'image')
@@ -1287,13 +1324,25 @@ class SignITPlayer:
             visible = 'block' if i == 0 else 'none'
             vid_dur = item.get('asset_duration') or item.get('duration', 30)
             loop_attr = 'loop' if single_item else ''
+            diagnostics['items'].append({
+                'index': i,
+                'name': item.get('asset_name'),
+                'type': asset_type,
+                **self._asset_status(item),
+            })
 
             if asset_type == 'image':
                 filename = item.get('filename', '')
-                slides_html += f'''<div class="slide" data-duration="{item.get('duration', 10)}" style="display:{visible}"><img src="{filename}" style="object-fit:{fit};width:100%;height:100%;" /></div>'''
+                local_src = html.escape(self._asset_local_src(filename), quote=True)
+                remote_src = html.escape(self._asset_remote_src(filename), quote=True)
+                alt = html.escape(item.get('asset_name') or filename or 'Image', quote=True)
+                slides_html += f'''<div class="slide" data-duration="{item.get('duration', 10)}" style="display:{visible}"><img src="{local_src}" data-fallback-src="{remote_src}" alt="{alt}" onerror="window.signitAssetError(this)" style="object-fit:{fit};width:100%;height:100%;" /><div class="asset-error">Image failed to load<br><small>{alt}</small></div></div>'''
             elif asset_type == 'video':
                 filename = item.get('filename', '')
-                slides_html += f'''<div class="slide" data-duration="{int(vid_dur)}" data-type="video" style="display:{visible}"><video src="{filename}" {muted} autoplay playsinline preload="auto" {loop_attr} style="object-fit:{fit};width:100%;height:100%;"></video></div>'''
+                local_src = html.escape(self._asset_local_src(filename), quote=True)
+                remote_src = html.escape(self._asset_remote_src(filename), quote=True)
+                label = html.escape(item.get('asset_name') or filename or 'Video', quote=True)
+                slides_html += f'''<div class="slide" data-duration="{int(vid_dur)}" data-type="video" style="display:{visible}"><video src="{local_src}" data-fallback-src="{remote_src}" onerror="window.signitAssetError(this)" {muted} autoplay playsinline preload="auto" {loop_attr} style="object-fit:{fit};width:100%;height:100%;"></video><div class="asset-error">Video failed to load<br><small>{label}</small></div></div>'''
             elif self._stream_url_for_item(item):
                 url = html.escape(self._stream_url_for_item(item), quote=True)
                 log.info(f'Detected RTSP/RTSPS playlist item: {self._mask_stream_url(item.get("url", ""))}')
@@ -1304,18 +1353,27 @@ class SignITPlayer:
                 slides_html += f'''<div class="slide" data-duration="{item.get('duration', 30)}" style="display:{visible}"><iframe src="{safe_url}" style="width:100%;height:100%;border:none;"></iframe></div>'''
             elif asset_type in ('html', 'widget'):
                 filename = item.get('filename', '')
-                slides_html += f'''<div class="slide" data-duration="{item.get('duration', 30)}" style="display:{visible}"><iframe src="{filename}" style="width:100%;height:100%;border:none;"></iframe></div>'''
+                local_src = html.escape(self._asset_local_src(filename), quote=True)
+                remote_src = html.escape(self._asset_remote_src(filename), quote=True)
+                label = html.escape(item.get('asset_name') or filename or 'HTML content', quote=True)
+                slides_html += f'''<div class="slide" data-duration="{item.get('duration', 30)}" style="display:{visible}"><iframe src="{local_src}" data-fallback-src="{remote_src}" onerror="window.signitAssetError(this)" style="width:100%;height:100%;border:none;"></iframe><div class="asset-error">HTML content failed to load<br><small>{label}</small></div></div>'''
+
+        if not slides_html:
+            slides_html = '''<div class="slide" data-duration="30" style="display:block"><div class="asset-error visible">Playlist has no playable media</div></div>'''
 
         page_html = f'''<!DOCTYPE html>
 <html><head>
 <meta charset="UTF-8">
 <style>
-*{{margin:0;padding:0;box-sizing:border-box}}
-html,body{{width:100%;height:100%;overflow:hidden;background:{bg_color}}}
-{player_css}
-.slide{{position:absolute;top:0;left:0;width:100%;height:100%}}
-.slide img,.slide video,.slide iframe{{display:block;width:100%;height:100%}}
-.stream-slide{{background:#020617;color:#fff;font-family:system-ui,-apple-system,sans-serif}}
+	*{{margin:0;padding:0;box-sizing:border-box}}
+	html,body{{width:100%;height:100%;overflow:hidden;background:{bg_color}}}
+	{player_css}
+	.slide{{position:absolute;top:0;left:0;width:100%;height:100%}}
+	.slide img,.slide video,.slide iframe{{display:block;width:100%;height:100%}}
+	.asset-error{{display:none;position:absolute;inset:0;align-items:center;justify-content:center;flex-direction:column;background:#050505;color:#f87171;font:700 28px system-ui;text-align:center;padding:48px;z-index:20}}
+	.asset-error small{{display:block;margin-top:14px;color:#fca5a5;font:500 18px system-ui;word-break:break-word}}
+	.asset-error.visible{{display:flex}}
+	.stream-slide{{background:#020617;color:#fff;font-family:system-ui,-apple-system,sans-serif}}
 .stream-card{{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);display:flex;flex-direction:column;align-items:center;gap:10px;padding:28px 34px;border-radius:24px;background:rgba(15,23,42,.74);border:1px solid rgba(148,163,184,.2);box-shadow:0 24px 80px rgba(0,0,0,.45)}}
 .stream-card h1{{font-size:24px;font-weight:700}}
 .stream-card p{{color:#94a3b8;font-size:14px}}
@@ -1327,10 +1385,29 @@ html,body{{width:100%;height:100%;overflow:hidden;background:{bg_color}}}
 (function(){{
   var slides=document.querySelectorAll('.slide');
   if(!slides||slides.length<1)return;
-  var current=0;
-  var count=slides.length;
-  var activeStreamUrl=null;
-  function controlStream(url){{
+	  var current=0;
+	  var count=slides.length;
+	  var activeStreamUrl=null;
+	  function report(kind,message){{
+	    fetch('/__signit/client-log?kind='+encodeURIComponent(kind)+'&message='+encodeURIComponent(message||'')).catch(function(){{}});
+	  }}
+	  window.signitAssetError=function(el){{
+	    var fallback=el.getAttribute('data-fallback-src');
+	    if(fallback && !el.getAttribute('data-fallback-tried')){{
+	      el.setAttribute('data-fallback-tried','1');
+	      report('asset-fallback',el.currentSrc||el.src||fallback);
+	      el.src=fallback;
+	      if(el.tagName==='VIDEO'){{try{{el.load();el.play();}}catch(e){{}}}}
+	      return;
+	    }}
+	    report('asset-error',el.currentSrc||el.src||'unknown asset');
+	    var error=el.parentElement&&el.parentElement.querySelector('.asset-error');
+	    if(error){{error.classList.add('visible');}}
+	  }};
+	  window.addEventListener('error',function(e){{
+	    report('js-error',(e.message||'error')+' '+(e.filename||'')+':'+(e.lineno||0));
+	  }});
+	  function controlStream(url){{
     if(url===activeStreamUrl)return;
     if(activeStreamUrl){{
       fetch('/__signit/stream/stop').catch(function(){{}});
@@ -1353,7 +1430,7 @@ html,body{{width:100%;height:100%;overflow:hidden;background:{bg_color}}}
     controlStream(slides[idx].getAttribute('data-stream-url')||null);
   }}
   window.addEventListener('beforeunload',function(){{controlStream(null);}});
-  if(count<2){{showSlide(0);return;}}
+	  if(count<2){{showSlide(0);return;}}
   var durations=[];
   for(var i=0;i<count;i++){{
     durations.push((parseInt(slides[i].getAttribute('data-duration'))||10)*1000);
@@ -1388,14 +1465,23 @@ html,body{{width:100%;height:100%;overflow:hidden;background:{bg_color}}}
       showSlide(current);
     }}
   }},500);
-}})();
-</script>
-</body></html>'''
+	}})();
+	</script>
+	</body></html>'''
 
         display_path = os.path.join(CACHE_DIR, 'display.html')
         with open(display_path, 'w') as f:
             f.write(page_html)
-        log.info('Display HTML generated')
+        diagnostics['display_html_size'] = len(page_html.encode('utf-8'))
+        try:
+            with open(DISPLAY_DIAGNOSTICS_PATH, 'w') as f:
+                json.dump(diagnostics, f, indent=2)
+        except Exception as e:
+            log.warning(f'Could not write display diagnostics: {e}')
+        log.info(
+            f'Display HTML generated for {playlist.get("name")} '
+            f'({len(items)} item(s), {diagnostics["display_html_size"]} bytes, diagnostics={DISPLAY_DIAGNOSTICS_PATH})'
+        )
 
     def _write_simple_screen(self, title, message, background='#09090b'):
         player_css = self._rotation_player_css()
@@ -1491,6 +1577,8 @@ html,body{{width:100%;height:100%;overflow:hidden;background:{bg_color}}}
             return
 
         screen_w, screen_h = self._get_screen_resolution()
+        if self._should_use_software_chromium():
+            log.warning('Using Chromium software-rendering launch path for this media session')
 
         env = os.environ.copy()
         env.setdefault('DISPLAY', ':0')
@@ -1563,11 +1651,34 @@ html,body{{width:100%;height:100%;overflow:hidden;background:{bg_color}}}
             f'--app={display_url}',
         ]
 
-        return [
+        software = safe + [
+            '--disable-gpu',
+            '--disable-gpu-compositing',
+            '--disable-accelerated-video-decode',
+            '--disable-accelerated-2d-canvas',
+            '--use-gl=swiftshader',
+            '--disable-features=UseSkiaRenderer,Vulkan',
+        ]
+
+        candidates = [
             ('configured', [chromium_cmd] + configured + [display_url]),
             ('safe-kiosk', [chromium_cmd] + safe + [display_url]),
+            ('software-kiosk', [chromium_cmd] + software + [display_url]),
             ('app-mode', [chromium_cmd] + app_mode),
         ]
+        if self._should_use_software_chromium():
+            candidates = [
+                ('software-kiosk', [chromium_cmd] + software + [display_url]),
+                ('safe-kiosk', [chromium_cmd] + safe + [display_url]),
+                ('app-mode', [chromium_cmd] + app_mode),
+                ('configured', [chromium_cmd] + configured + [display_url]),
+            ]
+        return candidates
+
+    def _should_use_software_chromium(self):
+        if time.time() < self.force_software_chromium_until:
+            return True
+        return bool(self.rotation_fallback and self.config.get('player_mode', 'media') == 'media')
 
     def _sanitize_chromium_flags(self, flags):
         drop_exact = {
@@ -2015,9 +2126,17 @@ html,body{{width:100%;height:100%;overflow:hidden;background:{bg_color}}}
                 if parsed.path == '/__signit/stream/stop':
                     player._stop_stream_player()
                     return self._send_json(200, {'success': True})
+                if parsed.path == '/__signit/client-log':
+                    params = urllib.parse.parse_qs(parsed.query)
+                    kind = params.get('kind', ['client'])[0][:80]
+                    message = params.get('message', [''])[0][:900]
+                    log.warning(f'Browser client log [{kind}]: {message}')
+                    return self._send_json(200, {'success': True})
 
                 path = self.translate_path(self.path)
                 if not os.path.isfile(path):
+                    if parsed.path not in ('/favicon.ico',):
+                        log.warning(f'Local content miss: {parsed.path} -> {path}')
                     return super().do_GET()
 
                 file_size = os.path.getsize(path)
