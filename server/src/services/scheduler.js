@@ -184,7 +184,8 @@ export function getActivePlaylistForDevice(deviceId, now = new Date()) {
   if (!device) return null;
 
   const activeSchedule = getActiveScheduleForDevice(deviceId, now);
-  if (activeSchedule) return activeSchedule.playlist_id;
+  // TV_OFF is a safety/quiet-hours schedule and should beat everything else.
+  if (activeSchedule?.playlist_name === 'TV_OFF') return activeSchedule.playlist_id;
 
   if (device.assigned_playlist_id) {
     const assigned = db.prepare('SELECT id, name, playlist_type FROM playlists WHERE id = ?').get(device.assigned_playlist_id);
@@ -192,6 +193,10 @@ export function getActivePlaylistForDevice(deviceId, now = new Date()) {
       return device.assigned_playlist_id;
     }
   }
+
+  // A direct assignment is intentionally an override. If it is blank, schedules
+  // and the group default are allowed to drive the player.
+  if (activeSchedule) return activeSchedule.playlist_id;
 
   if (device.group_id) {
     const group = db.prepare(`

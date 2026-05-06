@@ -339,7 +339,7 @@ test('core API smoke test covers auth, content, devices, schedules, and player r
 
   const playerManifest = await request('/api/setup/player-manifest');
   assert.equal(playerManifest.ok, true);
-  assert.equal(playerManifest.data.version, '1.6.10');
+  assert.equal(playerManifest.data.version, '1.6.11');
   assert.ok(playerManifest.data.files.includes('player.py'));
 
   const login = await request('/api/auth/login', {
@@ -618,7 +618,7 @@ test('core API smoke test covers auth, content, devices, schedules, and player r
     headers: { Authorization: authHeaders.Authorization },
   });
   assert.equal(deviceDetail.ok, true);
-  assert.equal(deviceDetail.data.device.latest_player_version, '1.6.10');
+  assert.equal(deviceDetail.data.device.latest_player_version, '1.6.11');
   assert.equal(deviceDetail.data.device.needs_player_update, true);
 
   const updatePlayers = await request('/api/devices/update-player', {
@@ -627,7 +627,7 @@ test('core API smoke test covers auth, content, devices, schedules, and player r
     body: JSON.stringify({ device_ids: [deviceId] }),
   });
   assert.equal(updatePlayers.ok, true);
-  assert.equal(updatePlayers.data.latest_player_version, '1.6.10');
+  assert.equal(updatePlayers.data.latest_player_version, '1.6.11');
   assert.equal(updatePlayers.data.sent.length, 0);
   assert.equal(updatePlayers.data.queued.length, 1);
   assert.equal(updatePlayers.data.queued[0].id, deviceId);
@@ -749,14 +749,34 @@ test('core API smoke test covers auth, content, devices, schedules, and player r
     }),
   });
   assert.equal(heartbeatBeforeSwitch.ok, true);
-  assert.equal(heartbeatBeforeSwitch.data.playlist_id, scheduledPlaylist.data.playlist.id);
-  assert.equal(heartbeatBeforeSwitch.data.needs_update, true);
+  assert.equal(heartbeatBeforeSwitch.data.playlist_id, fallbackPlaylist.data.playlist.id);
+  assert.equal(heartbeatBeforeSwitch.data.needs_update, false);
+
+  const playerDirectOverride = await request('/api/player/playlist', {
+    headers: { 'X-Device-Id': deviceId },
+  });
+  assert.equal(playerDirectOverride.ok, true);
+  assert.equal(playerDirectOverride.data.playlist.name, 'Fallback Playlist');
+
+  const clearDirectOverride = await request(`/api/devices/${deviceId}`, {
+    method: 'PUT',
+    headers: authHeaders,
+    body: JSON.stringify({ assigned_playlist_id: null }),
+  });
+  assert.equal(clearDirectOverride.ok, true);
 
   const playerScheduled = await request('/api/player/playlist', {
     headers: { 'X-Device-Id': deviceId },
   });
   assert.equal(playerScheduled.ok, true);
   assert.equal(playerScheduled.data.playlist.name, 'Scheduled Playlist');
+
+  const restoreDirectOverride = await request(`/api/devices/${deviceId}`, {
+    method: 'PUT',
+    headers: authHeaders,
+    body: JSON.stringify({ assigned_playlist_id: fallbackPlaylist.data.playlist.id }),
+  });
+  assert.equal(restoreDirectOverride.ok, true);
 
   const pauseSchedule = await request(`/api/schedules/${schedule.data.schedule.id}`, {
     method: 'PUT',

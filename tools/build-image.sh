@@ -267,6 +267,8 @@ force_fullscreen() {
 if [ -f "$CONF" ] && grep -q '"configured"' "$CONF" 2>/dev/null; then
   # ─── PLAYER MODE ───
   while true; do
+    pkill -TERM -u "$(id -u)" -f chromium 2>/dev/null || true
+    sleep 1
     $VENV_PY /opt/signit/player.py
     sleep 5
   done

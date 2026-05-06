@@ -28,7 +28,7 @@ import psutil
 from config import load_config, save_config, CACHE_DIR, LOG_DIR
 
 CONTENT_SERVER_PORT = 8889
-PLAYER_VERSION = '1.6.10'
+PLAYER_VERSION = '1.6.11'
 STREAM_LOG_PATH = os.path.join(LOG_DIR, 'stream-player.log')
 CHROMIUM_LOG_PATH = os.path.join(LOG_DIR, 'chromium.log')
 DISPLAY_DIAGNOSTICS_PATH = os.path.join(LOG_DIR, 'display-diagnostics.json')
@@ -85,6 +85,7 @@ class SignITPlayer:
         self.black_screen_hits = 0
         self.last_black_screen_recovery = 0
         self.force_software_chromium_until = 0
+        self.last_fullscreen_enforce = 0
         self.sio = socketio.Client(reconnection=True, reconnection_delay=5)
         self._setup_socket()
         self._repair_chromium_defaults()
@@ -549,20 +550,35 @@ class SignITPlayer:
         if not self._ensure_display_html():
             return
 
+        window_ids = self._chromium_window_ids()
+
         if self.chromium_proc and self.chromium_proc.poll() is not None:
             exit_code = self.chromium_proc.returncode
-            log.warning(f'Chromium died (exit code {exit_code}), relaunching...')
             self.chromium_proc = None
+            if window_ids:
+                log.warning(
+                    f'Chromium launcher exited with code {exit_code}, but kiosk window still exists; '
+                    'adopting existing window instead of relaunching'
+                )
+                self._maybe_force_fullscreen(window_ids)
+                return
+            log.warning(f'Chromium died (exit code {exit_code}), relaunching...')
             self._launch_chromium()
             return
 
-        window_ids = self._chromium_window_ids()
         if not window_ids:
             log.warning('Chromium process is present but no kiosk window was found; relaunching browser session')
             self._stop_chromium()
             self._launch_chromium()
             return
 
+        self._maybe_force_fullscreen(window_ids)
+
+    def _maybe_force_fullscreen(self, window_ids=None, force=False):
+        """Avoid hammering xdotool; repeated resize/activate can flicker on Pi X11."""
+        now = time.time()
+        if not force and now - self.last_fullscreen_enforce < 120:
+            return
         try:
             screen_w, screen_h = self._get_screen_resolution()
             self._force_fullscreen(screen_w, screen_h, attempts=1, delay=0, window_ids=window_ids)
@@ -1076,7 +1092,7 @@ class SignITPlayer:
         self.active_stream_url = None
         self.active_stream_wall = None
 
-    def _stop_chromium(self):
+    def _stop_chromium(self, kill_unmanaged=True):
         if self.chromium_proc and self.chromium_proc.poll() is None:
             log.info('Stopping Chromium for native stream playback')
             self.chromium_proc.terminate()
@@ -1091,6 +1107,26 @@ class SignITPlayer:
             except Exception:
                 pass
             self.chromium_log_file = None
+        if kill_unmanaged:
+            self._stop_unmanaged_chromium()
+
+    def _stop_unmanaged_chromium(self):
+        env = os.environ.copy()
+        env.setdefault('DISPLAY', ':0')
+        if not self._chromium_window_ids() and not self._chromium_process_ids():
+            return
+        log.warning('Stopping unmanaged Chromium session before clean kiosk launch')
+        uid = str(os.getuid())
+        for signal_name in ('-TERM', '-KILL'):
+            try:
+                subprocess.run(['pkill', signal_name, '-u', uid, '-f', 'chromium'], env=env, capture_output=True, timeout=5)
+            except Exception as e:
+                log.warning(f'Could not {signal_name} unmanaged Chromium: {e}')
+            deadline = time.time() + 4
+            while time.time() < deadline:
+                if not self._chromium_window_ids() and not self._chromium_process_ids():
+                    return
+                time.sleep(0.4)
 
     def _ensure_stream_player_alive(self):
         if self.active_stream_wall and self.stream_procs:
@@ -1192,6 +1228,20 @@ class SignITPlayer:
                 continue
         return seen
 
+    def _chromium_process_ids(self):
+        """Return Chromium process ids owned by the SignIT user."""
+        try:
+            result = subprocess.run(
+                ['pgrep', '-u', str(os.getuid()), '-f', 'chromium'],
+                capture_output=True, text=True, timeout=5
+            )
+            if result.returncode != 0:
+                return []
+            own_pid = str(os.getpid())
+            return [pid.strip() for pid in result.stdout.splitlines() if pid.strip() and pid.strip() != own_pid]
+        except Exception:
+            return []
+
     def _is_black_image(self, path):
         try:
             from PIL import Image, ImageStat
@@ -1243,8 +1293,7 @@ class SignITPlayer:
     def _recover_from_black_screen(self):
         playlist_name = self.current_playlist.get('name', 'current playlist') if self.current_playlist else 'current playlist'
         log.error(f'Recovering black display while playing {playlist_name}')
-        self.force_software_chromium_until = time.time() + 900
-        log.warning('Black-screen recovery will force Chromium software rendering for 15 minutes')
+        log.warning('Black-screen recovery will relaunch Chromium cleanly without switching renderers')
         current = self.current_playlist
         self._set_display_power('on')
         self._stop_chromium()
@@ -1580,6 +1629,9 @@ class SignITPlayer:
         if self._should_use_software_chromium():
             log.warning('Using Chromium software-rendering launch path for this media session')
 
+        if self._chromium_window_ids():
+            self._stop_unmanaged_chromium()
+
         env = os.environ.copy()
         env.setdefault('DISPLAY', ':0')
 
@@ -1661,16 +1713,16 @@ class SignITPlayer:
         ]
 
         candidates = [
-            ('configured', [chromium_cmd] + configured + [display_url]),
             ('safe-kiosk', [chromium_cmd] + safe + [display_url]),
-            ('software-kiosk', [chromium_cmd] + software + [display_url]),
             ('app-mode', [chromium_cmd] + app_mode),
+            ('configured', [chromium_cmd] + configured + [display_url]),
+            ('software-kiosk', [chromium_cmd] + software + [display_url]),
         ]
         if self._should_use_software_chromium():
             candidates = [
-                ('software-kiosk', [chromium_cmd] + software + [display_url]),
                 ('safe-kiosk', [chromium_cmd] + safe + [display_url]),
                 ('app-mode', [chromium_cmd] + app_mode),
+                ('software-kiosk', [chromium_cmd] + software + [display_url]),
                 ('configured', [chromium_cmd] + configured + [display_url]),
             ]
         return candidates
@@ -1678,7 +1730,7 @@ class SignITPlayer:
     def _should_use_software_chromium(self):
         if time.time() < self.force_software_chromium_until:
             return True
-        return bool(self.rotation_fallback and self.config.get('player_mode', 'media') == 'media')
+        return False
 
     def _sanitize_chromium_flags(self, flags):
         drop_exact = {
@@ -1714,11 +1766,11 @@ class SignITPlayer:
     def _wait_for_chromium_window(self, proc, timeout=12):
         deadline = time.time() + timeout
         while time.time() < deadline:
-            if proc.poll() is not None:
-                return []
             window_ids = self._chromium_window_ids()
             if window_ids:
                 return window_ids
+            if proc.poll() is not None:
+                return []
             time.sleep(1)
         return []
 
@@ -1817,6 +1869,7 @@ class SignITPlayer:
                     subprocess.run(['xdotool', 'windowsize', '--sync', wid, str(screen_w), str(screen_h)], env=env, capture_output=True, timeout=5)
                     subprocess.run(['xdotool', 'windowactivate', wid], env=env, capture_output=True, timeout=5)
                 log.info(f'Forced Chromium to {screen_w}x{screen_h} via xdotool')
+                self.last_fullscreen_enforce = time.time()
                 return
             except Exception as e:
                 log.warning(f'xdotool attempt {attempt+1} failed: {e}')
