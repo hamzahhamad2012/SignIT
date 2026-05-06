@@ -28,10 +28,11 @@ import psutil
 from config import load_config, save_config, CACHE_DIR, LOG_DIR
 
 CONTENT_SERVER_PORT = 8889
-PLAYER_VERSION = '1.6.8'
+PLAYER_VERSION = '1.6.9'
 STREAM_LOG_PATH = os.path.join(LOG_DIR, 'stream-player.log')
 CHROMIUM_LOG_PATH = os.path.join(LOG_DIR, 'chromium.log')
 CHROMIUM_DEFAULT_FLAGS = '/etc/chromium.d/default-flags'
+CHROMIUM_BACKUP_DIR = '/var/backups/signit/chromium.d'
 BLACK_SCREEN_CHECK_INTERVAL = 30
 BLACK_SCREEN_RECOVERY_COOLDOWN = 90
 UPDATE_FILES = {
@@ -1628,23 +1629,63 @@ html,body{{width:100%;height:100%;overflow:hidden;background:{bg_color}}}
     def _repair_chromium_defaults(self):
         """Neutralize broken distro wrapper defaults that can make Chromium exit before launch."""
         try:
-            if not os.path.exists(CHROMIUM_DEFAULT_FLAGS):
-                return
-            with open(CHROMIUM_DEFAULT_FLAGS, 'r') as f:
-                content = f.read()
-            if 'CHROMIUM_FLAGS' in content and ('(' in content or ')' in content):
-                backup = f'{CHROMIUM_DEFAULT_FLAGS}.signit-broken'
-                if not os.path.exists(backup):
-                    shutil.copy2(CHROMIUM_DEFAULT_FLAGS, backup)
-                replacement = (
-                    '# Repaired by SignIT: the previous file had invalid shell syntax and made Chromium exit.\n'
-                    'CHROMIUM_FLAGS=""\n'
+            chromium_dir = os.path.dirname(CHROMIUM_DEFAULT_FLAGS)
+            safe_content = (
+                '# Repaired by SignIT: keep Chromium wrapper defaults shell-safe.\n'
+                'CHROMIUM_FLAGS=""\n'
+            )
+
+            def run_privileged(args, timeout=8, input_text=None):
+                command = args if os.geteuid() == 0 else ['sudo', '-n'] + args
+                return subprocess.run(
+                    command,
+                    input=input_text,
+                    text=True,
+                    capture_output=True,
+                    timeout=timeout,
                 )
-                with open(CHROMIUM_DEFAULT_FLAGS, 'w') as f:
-                    f.write(replacement)
-                log.warning(f'Repaired invalid Chromium default flags file: {CHROMIUM_DEFAULT_FLAGS}')
-        except PermissionError:
-            log.warning(f'Cannot repair {CHROMIUM_DEFAULT_FLAGS}; run sudo chmod or update image if Chromium wrapper still fails')
+
+            mkdir_result = run_privileged(['mkdir', '-p', CHROMIUM_BACKUP_DIR])
+            if mkdir_result.returncode != 0:
+                log.warning(f'Cannot create Chromium backup directory: {mkdir_result.stderr.strip()}')
+
+            moved = []
+            if os.path.isdir(chromium_dir):
+                for name in os.listdir(chromium_dir):
+                    if name == os.path.basename(CHROMIUM_DEFAULT_FLAGS):
+                        continue
+                    is_bad_backup = (
+                        name.startswith('default-flags.')
+                        or name.endswith(('.broken', '.bak'))
+                        or '.signit-' in name
+                    )
+                    if not is_bad_backup:
+                        continue
+                    source = os.path.join(chromium_dir, name)
+                    destination = os.path.join(CHROMIUM_BACKUP_DIR, name)
+                    result = run_privileged(['mv', '-f', source, destination])
+                    if result.returncode == 0:
+                        moved.append(name)
+                    else:
+                        log.warning(f'Could not move Chromium sourced backup {source}: {result.stderr.strip()}')
+
+            content = ''
+            if os.path.exists(CHROMIUM_DEFAULT_FLAGS):
+                with open(CHROMIUM_DEFAULT_FLAGS, 'r') as f:
+                    content = f.read()
+                timestamp = datetime.utcnow().strftime('%Y%m%d%H%M%S')
+                backup = os.path.join(CHROMIUM_BACKUP_DIR, f'default-flags.{timestamp}')
+                run_privileged(['cp', '-f', CHROMIUM_DEFAULT_FLAGS, backup])
+
+            needs_repair = content != safe_content
+            if needs_repair or moved:
+                result = run_privileged(['tee', CHROMIUM_DEFAULT_FLAGS], input_text=safe_content)
+                if result.returncode == 0:
+                    log.warning(
+                        f'Repaired Chromium defaults; moved sourced backups={moved or "none"}'
+                    )
+                else:
+                    log.warning(f'Cannot repair {CHROMIUM_DEFAULT_FLAGS}: {result.stderr.strip()}')
         except Exception as e:
             log.warning(f'Chromium default flags repair failed: {e}')
 

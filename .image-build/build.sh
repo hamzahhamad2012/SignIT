@@ -189,7 +189,9 @@ VENV_PY=/opt/signit/venv/bin/python3
 CONF=/opt/signit/config.json
 
 if [ -f /etc/chromium.d/default-flags ]; then
-  cp /etc/chromium.d/default-flags /etc/chromium.d/default-flags.signit-original 2>/dev/null || true
+  mkdir -p /var/backups/signit/chromium.d
+  cp /etc/chromium.d/default-flags /var/backups/signit/chromium.d/default-flags.signit-original 2>/dev/null || true
+  rm -f /etc/chromium.d/default-flags.* /etc/chromium.d/*.broken /etc/chromium.d/*.bak 2>/dev/null || true
   printf '%s\n' '# Managed by SignIT; keep Chromium wrapper defaults shell-safe.' 'CHROMIUM_FLAGS=""' > /etc/chromium.d/default-flags
 fi
 
