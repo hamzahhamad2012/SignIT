@@ -28,8 +28,10 @@ import psutil
 from config import load_config, save_config, CACHE_DIR, LOG_DIR
 
 CONTENT_SERVER_PORT = 8889
-PLAYER_VERSION = '1.6.4'
+PLAYER_VERSION = '1.6.5'
 STREAM_LOG_PATH = os.path.join(LOG_DIR, 'stream-player.log')
+BLACK_SCREEN_CHECK_INTERVAL = 30
+BLACK_SCREEN_RECOVERY_COOLDOWN = 90
 UPDATE_FILES = {
     'player.py',
     'config.py',
@@ -74,6 +76,9 @@ class SignITPlayer:
         self.rotation_fallback = False
         self.update_in_progress = False
         self.last_update_progress = 0
+        self.display_power_state = 'on'
+        self.black_screen_hits = 0
+        self.last_black_screen_recovery = 0
         self.sio = socketio.Client(reconnection=True, reconnection_delay=5)
         self._setup_socket()
 
@@ -231,6 +236,15 @@ class SignITPlayer:
                 self._take_screenshot()
             except Exception as e:
                 log.error(f'Screenshot failed: {e}')
+
+    def black_screen_watchdog(self):
+        """Recover browser-rendered playlists if the real display remains black."""
+        while self.running:
+            time.sleep(BLACK_SCREEN_CHECK_INTERVAL)
+            try:
+                self._check_black_screen()
+            except Exception as e:
+                log.warning(f'Black-screen watchdog failed: {e}')
 
     def _refresh_content(self):
         """Fetch and display the latest playlist."""
@@ -484,6 +498,7 @@ class SignITPlayer:
             self._apply_orientation(self.config.get('display_rotation') or self.config.get('orientation', 'landscape'))
 
         log.info(f'Display power {desired} requested ({successes}/{len(commands)} commands succeeded)')
+        self.display_power_state = desired
         if self.sio.connected:
             self.sio.emit('player:status', {
                 'display_power': desired,
@@ -493,9 +508,7 @@ class SignITPlayer:
 
     def _ensure_chromium_alive(self):
         """Relaunch Chromium if it crashed or was killed."""
-        if not self.current_playlist:
-            return
-        if self._is_stream_playlist(self.current_playlist) or self._is_stream_only_playlist(self.current_playlist):
+        if not self._should_monitor_browser_playlist():
             return
 
         if not self._ensure_display_html():
@@ -520,6 +533,17 @@ class SignITPlayer:
             self._force_fullscreen(screen_w, screen_h, attempts=1, delay=0, window_ids=window_ids)
         except Exception as e:
             log.warning(f'Chromium window health check could not verify fullscreen state: {e}')
+
+    def _should_monitor_browser_playlist(self):
+        if not self.current_playlist:
+            return False
+        if self.display_power_state == 'off':
+            return False
+        if self.current_playlist.get('system_action') == 'display_off':
+            return False
+        if self._is_stream_playlist(self.current_playlist) or self._is_stream_only_playlist(self.current_playlist):
+            return False
+        return True
 
     def _chromium_watchdog(self):
         """Continuously monitor Chromium and restart if it dies."""
@@ -1115,6 +1139,76 @@ class SignITPlayer:
             except Exception:
                 continue
         return seen
+
+    def _is_black_image(self, path):
+        try:
+            from PIL import Image, ImageStat
+            with Image.open(path) as image:
+                grayscale = image.convert('L').resize((64, 36))
+                stat = ImageStat.Stat(grayscale)
+                mean = stat.mean[0]
+                max_pixel = grayscale.getextrema()[1]
+                return mean < 4 and max_pixel < 18
+        except Exception as e:
+            log.warning(f'Could not inspect screenshot brightness: {e}')
+            return False
+
+    def _check_black_screen(self):
+        if not self._should_monitor_browser_playlist():
+            self.black_screen_hits = 0
+            return
+
+        probe_path = os.path.join(CACHE_DIR, 'black-screen-probe.png')
+        env = os.environ.copy()
+        env.setdefault('DISPLAY', ':0')
+        result = subprocess.run(
+            ['scrot', '-o', probe_path],
+            env=env, capture_output=True, timeout=10
+        )
+        if result.returncode != 0:
+            log.debug(f'Black-screen probe failed: {result.stderr.decode(errors="ignore") if result.stderr else ""}')
+            return
+
+        if not self._is_black_image(probe_path):
+            if self.black_screen_hits:
+                log.info('Black-screen watchdog saw normal output again')
+            self.black_screen_hits = 0
+            return
+
+        self.black_screen_hits += 1
+        log.warning(f'Black-screen watchdog detected black output ({self.black_screen_hits}/2)')
+        if self.black_screen_hits < 2:
+            return
+
+        now = time.time()
+        if now - self.last_black_screen_recovery < BLACK_SCREEN_RECOVERY_COOLDOWN:
+            return
+
+        self.last_black_screen_recovery = now
+        self.black_screen_hits = 0
+        self._recover_from_black_screen()
+
+    def _recover_from_black_screen(self):
+        playlist_name = self.current_playlist.get('name', 'current playlist') if self.current_playlist else 'current playlist'
+        log.error(f'Recovering black display while playing {playlist_name}')
+        current = self.current_playlist
+        self._set_display_power('on')
+        self._stop_chromium()
+        self.current_playlist = None
+        try:
+            self._refresh_content()
+            return
+        except Exception as e:
+            log.error(f'Playlist refresh during black-screen recovery failed: {e}')
+
+        if current:
+            try:
+                self.current_playlist = current
+                self._download_assets(current.get('items', []))
+                self._generate_display_html(current)
+                self._launch_chromium()
+            except Exception as e:
+                log.error(f'Fallback local black-screen recovery failed: {e}')
 
     def _rotation_player_css(self):
         if not self.rotation_fallback:
@@ -1816,6 +1910,9 @@ html,body{{width:100%;height:100%;overflow:hidden;background:{bg_color}}}
 
         watchdog_thread = threading.Thread(target=self._chromium_watchdog, daemon=True)
         watchdog_thread.start()
+
+        black_screen_thread = threading.Thread(target=self.black_screen_watchdog, daemon=True)
+        black_screen_thread.start()
 
         self._refresh_content()
 
