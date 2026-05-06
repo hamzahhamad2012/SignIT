@@ -28,8 +28,9 @@ import psutil
 from config import load_config, save_config, CACHE_DIR, LOG_DIR
 
 CONTENT_SERVER_PORT = 8889
-PLAYER_VERSION = '1.6.5'
+PLAYER_VERSION = '1.6.6'
 STREAM_LOG_PATH = os.path.join(LOG_DIR, 'stream-player.log')
+CHROMIUM_LOG_PATH = os.path.join(LOG_DIR, 'chromium.log')
 BLACK_SCREEN_CHECK_INTERVAL = 30
 BLACK_SCREEN_RECOVERY_COOLDOWN = 90
 UPDATE_FILES = {
@@ -66,6 +67,7 @@ class SignITPlayer:
         self.running = True
         self.current_playlist = None
         self.chromium_proc = None
+        self.chromium_log_file = None
         self.stream_proc = None
         self.stream_procs = []
         self.stream_log_file = None
@@ -646,17 +648,23 @@ class SignITPlayer:
         except Exception:
             return 'RTSP stream'
 
-    def _tail_stream_log(self, max_chars=1800):
+    def _tail_file(self, path, max_chars=1800):
         try:
-            if not os.path.exists(STREAM_LOG_PATH):
+            if not os.path.exists(path):
                 return ''
-            with open(STREAM_LOG_PATH, 'rb') as f:
+            with open(path, 'rb') as f:
                 f.seek(0, os.SEEK_END)
                 size = f.tell()
                 f.seek(max(0, size - max_chars))
                 return f.read().decode('utf-8', errors='replace').strip()
         except Exception:
             return ''
+
+    def _tail_stream_log(self, max_chars=1800):
+        return self._tail_file(STREAM_LOG_PATH, max_chars=max_chars)
+
+    def _tail_chromium_log(self, max_chars=2400):
+        return self._tail_file(CHROMIUM_LOG_PATH, max_chars=max_chars)
 
     def _open_stream_log(self, kind, url, label=None):
         os.makedirs(LOG_DIR, exist_ok=True)
@@ -1044,6 +1052,12 @@ class SignITPlayer:
             except Exception:
                 self.chromium_proc.kill()
         self.chromium_proc = None
+        if self.chromium_log_file:
+            try:
+                self.chromium_log_file.close()
+            except Exception:
+                pass
+            self.chromium_log_file = None
 
     def _ensure_stream_player_alive(self):
         if self.active_stream_wall and self.stream_procs:
@@ -1447,18 +1461,124 @@ html,body{{width:100%;height:100%;overflow:hidden;background:{bg_color}}}
 
         screen_w, screen_h = self._get_screen_resolution()
 
-        flags = list(self.config.get('chromium_flags', []))
-        flags = [f for f in flags if not f.startswith('--window-size=')]
-        flags.append(f'--window-size={screen_w},{screen_h}')
-
         env = os.environ.copy()
         env.setdefault('DISPLAY', ':0')
 
-        cmd = [chromium_cmd] + flags + [display_url]
-        log.info(f'Launching Chromium at {screen_w}x{screen_h}: {display_url}')
-        self.chromium_proc = subprocess.Popen(cmd, env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        for label, cmd in self._chromium_launch_candidates(chromium_cmd, display_url, screen_w, screen_h):
+            log.info(f'Launching Chromium ({label}) at {screen_w}x{screen_h}: {display_url}')
+            log_file = self._open_chromium_log(label, cmd)
+            proc = subprocess.Popen(cmd, env=env, stdout=log_file, stderr=log_file)
+            window_ids = self._wait_for_chromium_window(proc, timeout=12)
 
-        threading.Thread(target=self._force_fullscreen, args=(screen_w, screen_h), daemon=True).start()
+            if proc.poll() is None and window_ids:
+                self.chromium_proc = proc
+                self.chromium_log_file = log_file
+                threading.Thread(
+                    target=self._force_fullscreen,
+                    args=(screen_w, screen_h),
+                    kwargs={'window_ids': window_ids},
+                    daemon=True,
+                ).start()
+                return
+
+            exit_code = proc.poll()
+            if exit_code is None:
+                log.warning(f'Chromium launch ({label}) produced no window; trying fallback launch flags')
+                proc.terminate()
+                try:
+                    proc.wait(timeout=5)
+                except Exception:
+                    proc.kill()
+            else:
+                tail = self._tail_chromium_log()
+                log.warning(f'Chromium launch ({label}) exited with code {exit_code}: {tail[-900:]}')
+
+            try:
+                log_file.close()
+            except Exception:
+                pass
+
+        self.chromium_proc = None
+        self.chromium_log_file = None
+        log.error(f'All Chromium launch attempts failed. Last Chromium output: {self._tail_chromium_log()[-1200:]}')
+
+    def _chromium_launch_candidates(self, chromium_cmd, display_url, screen_w, screen_h):
+        configured = self._sanitize_chromium_flags(self.config.get('chromium_flags', []))
+        configured.extend([f'--window-size={screen_w},{screen_h}', '--window-position=0,0'])
+
+        safe = [
+            '--kiosk',
+            '--noerrdialogs',
+            '--disable-infobars',
+            '--no-first-run',
+            '--disable-session-crashed-bubble',
+            '--hide-crash-restore-bubble',
+            '--autoplay-policy=no-user-gesture-required',
+            f'--window-size={screen_w},{screen_h}',
+            '--window-position=0,0',
+        ]
+
+        app_mode = [
+            '--noerrdialogs',
+            '--disable-infobars',
+            '--no-first-run',
+            '--disable-session-crashed-bubble',
+            '--hide-crash-restore-bubble',
+            '--autoplay-policy=no-user-gesture-required',
+            '--start-fullscreen',
+            '--start-maximized',
+            f'--window-size={screen_w},{screen_h}',
+            '--window-position=0,0',
+            f'--app={display_url}',
+        ]
+
+        return [
+            ('configured', [chromium_cmd] + configured + [display_url]),
+            ('safe-kiosk', [chromium_cmd] + safe + [display_url]),
+            ('app-mode', [chromium_cmd] + app_mode),
+        ]
+
+    def _sanitize_chromium_flags(self, flags):
+        drop_exact = {
+            '--fast',
+            '--fast-start',
+            '--disable-gpu-sandbox',
+            '--disable-accelerated-video-decode',
+            '--disable-gpu-compositing',
+        }
+        drop_prefixes = (
+            '--window-size=',
+            '--window-position=',
+            '--remote-debugging-port=',
+        )
+        clean = []
+        for flag in flags or []:
+            if flag in drop_exact or any(flag.startswith(prefix) for prefix in drop_prefixes):
+                continue
+            if flag not in clean:
+                clean.append(flag)
+        return clean
+
+    def _open_chromium_log(self, label, cmd):
+        os.makedirs(LOG_DIR, exist_ok=True)
+        chromium_log = open(CHROMIUM_LOG_PATH, 'a', buffering=1)
+        chromium_log.write('\n')
+        chromium_log.write('=' * 72 + '\n')
+        chromium_log.write(f'{datetime.utcnow().isoformat()}Z launching chromium [{label}]\n')
+        chromium_log.write(' '.join(cmd) + '\n')
+        chromium_log.write('=' * 72 + '\n')
+        return chromium_log
+
+    def _wait_for_chromium_window(self, proc, timeout=12):
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if proc.poll() is not None:
+                return []
+            window_ids = self._chromium_window_ids()
+            if window_ids:
+                return window_ids
+            time.sleep(1)
+        return []
 
     def _find_chromium(self):
         """Find Chromium binary path."""

@@ -25,8 +25,6 @@ DEFAULT_CONFIG = {
         '--kiosk',
         '--disable-translate',
         '--no-first-run',
-        '--fast',
-        '--fast-start',
         '--start-fullscreen',
         '--start-maximized',
         '--window-position=0,0',
@@ -36,10 +34,6 @@ DEFAULT_CONFIG = {
         '--allow-file-access-from-files',
         '--disable-session-crashed-bubble',
         '--hide-crash-restore-bubble',
-        '--remote-debugging-port=9222',
-        '--disable-gpu-sandbox',
-        '--disable-accelerated-video-decode',
-        '--disable-gpu-compositing',
     ],
 }
 
