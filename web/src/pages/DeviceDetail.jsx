@@ -374,7 +374,7 @@ export default function DeviceDetail() {
   const isPortraitDisplay = currentDisplayRotation.startsWith('portrait');
   const rawScreenshotIsLandscape = screenshotSize.width > screenshotSize.height;
   const screenshotDegrees = screenshotRotationDegrees(currentDisplayRotation);
-  const shouldRotateScreenshot = Boolean(device.screenshot && screenshotDegrees && (!screenshotSize.width || rawScreenshotIsLandscape));
+  const shouldRotateScreenshot = Boolean(device.screenshot && screenshotDegrees && rawScreenshotIsLandscape);
   const hasLocation = Boolean(
     device.location_name ||
     device.location_address ||
@@ -589,28 +589,39 @@ export default function DeviceDetail() {
                 </div>
               )}
               {device.screenshot ? (
-                <div className={`${isPortraitDisplay ? 'mx-auto aspect-[9/16] max-h-[78vh] max-w-[560px]' : 'aspect-video w-full'} relative overflow-hidden rounded-lg border border-surface-border bg-black`}>
-                  <img
-                    src={device.screenshot}
-                    alt="Device screenshot"
-                    onLoad={(event) => setScreenshotSize({
-                      width: event.currentTarget.naturalWidth,
-                      height: event.currentTarget.naturalHeight,
-                    })}
-                    className="absolute left-1/2 top-1/2 max-w-none object-contain"
-                    style={shouldRotateScreenshot ? {
-                      width: isPortraitDisplay ? '177.777777%' : '100%',
-                      height: 'auto',
-                      transform: `translate(-50%, -50%) rotate(${screenshotDegrees}deg)`,
-                    } : {
-                      width: '100%',
-                      height: '100%',
-                      transform: screenshotDegrees === 180 ? 'translate(-50%, -50%) rotate(180deg)' : 'translate(-50%, -50%)',
-                    }}
-                  />
+                <div className={`${isPortraitDisplay ? 'mx-auto max-w-[680px]' : 'w-full'} rounded-lg border border-surface-border bg-black`}>
+                  {shouldRotateScreenshot ? (
+                    <div className="relative mx-auto aspect-[9/16] w-full max-w-[680px] overflow-hidden">
+                      <img
+                        src={device.screenshot}
+                        alt="Device screenshot"
+                        onLoad={(event) => setScreenshotSize({
+                          width: event.currentTarget.naturalWidth,
+                          height: event.currentTarget.naturalHeight,
+                        })}
+                        className="absolute left-1/2 top-1/2 max-w-none object-contain"
+                        style={{
+                          width: '177.777778%',
+                          height: 'auto',
+                          transform: `translate(-50%, -50%) rotate(${screenshotDegrees}deg)`,
+                        }}
+                      />
+                    </div>
+                  ) : (
+                    <img
+                      src={device.screenshot}
+                      alt="Device screenshot"
+                      onLoad={(event) => setScreenshotSize({
+                        width: event.currentTarget.naturalWidth,
+                        height: event.currentTarget.naturalHeight,
+                      })}
+                      className="block h-auto w-full rounded-lg object-contain"
+                      style={screenshotDegrees === 180 ? { transform: 'rotate(180deg)' } : undefined}
+                    />
+                  )}
                 </div>
               ) : (
-                <div className={`${isPortraitDisplay ? 'mx-auto aspect-[9/16] max-h-[78vh] max-w-[560px]' : 'aspect-video w-full'} rounded-lg bg-surface-overlay flex items-center justify-center`}>
+                <div className={`${isPortraitDisplay ? 'mx-auto aspect-[9/16] max-w-[680px]' : 'aspect-video w-full'} rounded-lg bg-surface-overlay flex items-center justify-center`}>
                   <p className="text-sm text-zinc-500">No screenshot available</p>
                 </div>
               )}
