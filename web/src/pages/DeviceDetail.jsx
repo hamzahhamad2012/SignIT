@@ -9,7 +9,7 @@ import toast from 'react-hot-toast';
 import {
   Monitor, ArrowLeft, Thermometer, Cpu, MemoryStick, HardDrive,
   Clock, Wifi, RotateCw, Camera, Trash2, Edit3, Save, Power, MapPin, Send, Loader2, Download,
-  Moon, Video,
+  Moon, Video, ChevronDown,
 } from 'lucide-react';
 
 const displayRotations = [
@@ -74,6 +74,13 @@ function isSystemPlaylist(playlist) {
   return playlist?.is_system || playlist?.system_action === 'display_off' || playlist?.name === 'TV_OFF';
 }
 
+function screenshotRotationDegrees(displayRotation) {
+  if (displayRotation === 'portrait-right') return -90;
+  if (displayRotation === 'portrait-left') return 90;
+  if (displayRotation === 'landscape-flipped') return 180;
+  return 0;
+}
+
 export default function DeviceDetail() {
   const { id } = useParams();
   const navigate = useNavigate();
@@ -81,11 +88,13 @@ export default function DeviceDetail() {
   const [device, setDevice] = useState(null);
   const [editing, setEditing] = useState(false);
   const [editName, setEditName] = useState('');
+  const [infoOpen, setInfoOpen] = useState(false);
   const [playlists, setPlaylists] = useState([]);
   const [groups, setGroups] = useState([]);
   const [showDelete, setShowDelete] = useState(false);
   const [editingLocation, setEditingLocation] = useState(false);
   const [locationForm, setLocationForm] = useState({});
+  const [screenshotSize, setScreenshotSize] = useState({ width: 0, height: 0 });
   const [schedules, setSchedules] = useState([]);
   const [quietForm, setQuietForm] = useState({
     enabled: false,
@@ -118,6 +127,10 @@ export default function DeviceDetail() {
       api.get('/schedules').then(d => setSchedules(d.schedules));
     }
   }, [id, canManage, navigate]);
+
+  useEffect(() => {
+    setScreenshotSize({ width: 0, height: 0 });
+  }, [device?.screenshot]);
 
   useEffect(() => {
     const unsubs = [];
@@ -358,6 +371,40 @@ export default function DeviceDetail() {
   const updateActive = activePlayerUpdateStatus(device.player_update_status) || pendingCmd === 'update_player';
   const updateProgress = clampProgress(device.player_update_progress);
   const updateEta = formatEta(device.player_update_eta_seconds);
+  const isPortraitDisplay = currentDisplayRotation.startsWith('portrait');
+  const rawScreenshotIsLandscape = screenshotSize.width > screenshotSize.height;
+  const screenshotDegrees = screenshotRotationDegrees(currentDisplayRotation);
+  const shouldRotateScreenshot = Boolean(device.screenshot && screenshotDegrees && (!screenshotSize.width || rawScreenshotIsLandscape));
+  const hasLocation = Boolean(
+    device.location_name ||
+    device.location_address ||
+    device.location_city ||
+    device.location_state ||
+    device.location_zip ||
+    device.location_country ||
+    device.location_notes
+  );
+  const deviceInfoRows = [
+    ['Device ID', device.id],
+    ['MAC Address', device.mac_address || '—'],
+    ['IP Address', device.ip_address || '—'],
+    ['Resolution', device.resolution],
+    ['Player Role', playerMode === 'stream' ? 'Camera Wall' : 'Media Display'],
+    ['Orientation', device.display_rotation_label || device.orientation],
+    ['OS', device.os_info || '—'],
+    ['Player Version', device.player_version || '—'],
+    ['Latest Player', device.latest_player_version || '—'],
+    ['Registered', new Date(device.registered_at).toLocaleDateString()],
+    ['Last Seen', device.last_seen ? new Date(device.last_seen).toLocaleString() : 'Never'],
+  ];
+  const remoteCommands = [
+    { cmd: 'reboot', label: 'Reboot', Icon: Power },
+    { cmd: 'restart_player', label: 'Restart', Icon: RotateCw },
+    { cmd: 'screenshot', label: 'Screenshot', Icon: Camera },
+    { cmd: 'refresh', label: 'Refresh', Icon: RotateCw },
+    { cmd: 'display_power', label: 'TV On', Icon: Monitor, params: { state: 'on' } },
+    { cmd: 'display_power', label: 'TV Off', Icon: Power, params: { state: 'off' } },
+  ];
 
   return (
     <div className="space-y-5">
@@ -400,35 +447,124 @@ export default function DeviceDetail() {
         ))}
       </div>
 
-      <div className="grid lg:grid-cols-3 gap-4">
-        <div className="lg:col-span-2 space-y-4">
-          <div className="card">
-            <h2 className="text-sm font-semibold text-zinc-200 mb-4">Device Information</h2>
-            <div className="grid sm:grid-cols-2 gap-3">
-              {[
-                ['Device ID', device.id],
-                ['MAC Address', device.mac_address || '—'],
-                ['IP Address', device.ip_address || '—'],
-                ['Resolution', device.resolution],
-                ['Player Role', playerMode === 'stream' ? 'Camera Wall' : 'Media Display'],
-                ['Orientation', device.display_rotation_label || device.orientation],
-                ['OS', device.os_info || '—'],
-                ['Player Version', device.player_version || '—'],
-                ['Latest Player', device.latest_player_version || '—'],
-                ['Registered', new Date(device.registered_at).toLocaleDateString()],
-                ['Last Seen', device.last_seen ? new Date(device.last_seen).toLocaleString() : 'Never'],
-              ].map(([label, value]) => (
-                <div key={label} className="flex flex-col gap-0.5">
-                  <span className="text-xs text-zinc-500">{label}</span>
-                  <span className="text-sm text-zinc-300 font-mono">{value}</span>
+      <div className="grid xl:grid-cols-[minmax(0,1fr)_380px] gap-4 items-start">
+        <div className="space-y-4">
+          <div className="card p-0 overflow-hidden">
+            <div className="px-5 py-4 flex items-center justify-between gap-4 hover:bg-surface-hover/40 transition-colors">
+              <button
+                type="button"
+                onClick={() => setInfoOpen((open) => !open)}
+                className="min-w-0 flex-1 text-left"
+              >
+                <div className="flex items-center gap-2">
+                  <h2 className="text-sm font-semibold text-zinc-200">Device Information</h2>
+                  <span className="rounded-full bg-surface-overlay px-2 py-0.5 text-[10px] uppercase tracking-wide text-zinc-500">
+                    {infoOpen ? 'Expanded' : 'Collapsed'}
+                  </span>
                 </div>
-              ))}
+                <p className="mt-1 text-xs text-zinc-500 truncate">
+                  {device.ip_address || 'No IP'} · {device.display_rotation_label || device.orientation || 'No orientation'} · {hasLocation ? device.location_name || 'Location saved' : 'No location set'}
+                </p>
+              </button>
+              <div className="flex shrink-0 items-center gap-2">
+                {canManage && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setInfoOpen(true);
+                      setEditingLocation(true);
+                    }}
+                    className="text-xs text-accent hover:underline"
+                  >
+                    {hasLocation ? 'Edit location' : 'Add location'}
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setInfoOpen((open) => !open)}
+                  className="rounded-lg p-1 text-zinc-500 hover:bg-surface-hover hover:text-zinc-300"
+                  aria-label={infoOpen ? 'Collapse device information' : 'Expand device information'}
+                >
+                  <ChevronDown size={16} className={`transition-transform ${infoOpen ? 'rotate-180' : ''}`} />
+                </button>
+              </div>
             </div>
+
+            {infoOpen && (
+              <div className="border-t border-surface-border px-5 py-4 space-y-5">
+                <div className="grid sm:grid-cols-2 xl:grid-cols-3 gap-3">
+                  {deviceInfoRows.map(([label, value]) => (
+                    <div key={label} className="flex flex-col gap-0.5">
+                      <span className="text-xs text-zinc-500">{label}</span>
+                      <span className="text-sm text-zinc-300 font-mono">{value}</span>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="rounded-xl border border-surface-border bg-surface-overlay/50 p-4">
+                  <div className="flex items-center justify-between mb-3">
+                    <h3 className="text-sm font-semibold text-zinc-200 flex items-center gap-1.5">
+                      <MapPin size={14} className="text-emerald-400" /> Location
+                    </h3>
+                    {canManage && !editingLocation && (
+                      <button onClick={() => setEditingLocation(true)} className="text-xs text-accent hover:underline">
+                        {hasLocation ? 'Edit' : 'Add'}
+                      </button>
+                    )}
+                  </div>
+                  {canManage && editingLocation ? (
+                    <div className="space-y-2">
+                      <input type="text" placeholder="Location name" value={locationForm.location_name}
+                        onChange={(e) => setLocationForm(f => ({ ...f, location_name: e.target.value }))} className="w-full text-xs" />
+                      <input type="text" placeholder="Street address" value={locationForm.location_address}
+                        onChange={(e) => setLocationForm(f => ({ ...f, location_address: e.target.value }))} className="w-full text-xs" />
+                      <div className="grid grid-cols-2 gap-2">
+                        <input type="text" placeholder="City" value={locationForm.location_city}
+                          onChange={(e) => setLocationForm(f => ({ ...f, location_city: e.target.value }))} className="text-xs" />
+                        <input type="text" placeholder="State" value={locationForm.location_state}
+                          onChange={(e) => setLocationForm(f => ({ ...f, location_state: e.target.value }))} className="text-xs" />
+                      </div>
+                      <div className="grid grid-cols-2 gap-2">
+                        <input type="text" placeholder="ZIP" value={locationForm.location_zip}
+                          onChange={(e) => setLocationForm(f => ({ ...f, location_zip: e.target.value }))} className="text-xs" />
+                        <input type="text" placeholder="Country" value={locationForm.location_country}
+                          onChange={(e) => setLocationForm(f => ({ ...f, location_country: e.target.value }))} className="text-xs" />
+                      </div>
+                      <textarea placeholder="Notes" value={locationForm.location_notes} rows={2}
+                        onChange={(e) => setLocationForm(f => ({ ...f, location_notes: e.target.value }))} className="w-full text-xs" />
+                      <div className="flex gap-2">
+                        <button onClick={handleSaveLocation} className="btn-primary text-xs flex-1"><Save size={12} /> Save</button>
+                        <button onClick={() => setEditingLocation(false)} className="btn-ghost text-xs">Cancel</button>
+                      </div>
+                    </div>
+                  ) : hasLocation ? (
+                    <div className="space-y-1 text-xs">
+                      {device.location_name && <p className="text-zinc-200 font-medium">{device.location_name}</p>}
+                      {device.location_address && <p className="text-zinc-400">{device.location_address}</p>}
+                      {(device.location_city || device.location_state || device.location_zip) && (
+                        <p className="text-zinc-400">
+                          {[device.location_city, device.location_state, device.location_zip].filter(Boolean).join(', ')}
+                        </p>
+                      )}
+                      {device.location_country && <p className="text-zinc-500">{device.location_country}</p>}
+                      {device.location_notes && <p className="text-zinc-600 mt-1 italic">{device.location_notes}</p>}
+                    </div>
+                  ) : (
+                    <p className="text-xs text-zinc-600">No location set</p>
+                  )}
+                </div>
+              </div>
+            )}
           </div>
 
           <div className="card">
             <div className="flex items-center justify-between mb-4">
-              <h2 className="text-sm font-semibold text-zinc-200">Screenshot</h2>
+              <div>
+                <h2 className="text-sm font-semibold text-zinc-200">Screenshot</h2>
+                <p className="text-xs text-zinc-600 mt-0.5">
+                  Preview follows the player orientation: {device.display_rotation_label || currentDisplayRotation}.
+                </p>
+              </div>
               {canManage && (
                 <button
                   onClick={() => sendCommand('screenshot')}
@@ -453,9 +589,28 @@ export default function DeviceDetail() {
                 </div>
               )}
               {device.screenshot ? (
-                <img src={device.screenshot} alt="Device screenshot" className="w-full rounded-lg border border-surface-border" />
+                <div className={`${isPortraitDisplay ? 'mx-auto aspect-[9/16] max-h-[78vh] max-w-[560px]' : 'aspect-video w-full'} relative overflow-hidden rounded-lg border border-surface-border bg-black`}>
+                  <img
+                    src={device.screenshot}
+                    alt="Device screenshot"
+                    onLoad={(event) => setScreenshotSize({
+                      width: event.currentTarget.naturalWidth,
+                      height: event.currentTarget.naturalHeight,
+                    })}
+                    className="absolute left-1/2 top-1/2 max-w-none object-contain"
+                    style={shouldRotateScreenshot ? {
+                      width: isPortraitDisplay ? '177.777777%' : '100%',
+                      height: 'auto',
+                      transform: `translate(-50%, -50%) rotate(${screenshotDegrees}deg)`,
+                    } : {
+                      width: '100%',
+                      height: '100%',
+                      transform: screenshotDegrees === 180 ? 'translate(-50%, -50%) rotate(180deg)' : 'translate(-50%, -50%)',
+                    }}
+                  />
+                </div>
               ) : (
-                <div className="aspect-video rounded-lg bg-surface-overlay flex items-center justify-center">
+                <div className={`${isPortraitDisplay ? 'mx-auto aspect-[9/16] max-h-[78vh] max-w-[560px]' : 'aspect-video w-full'} rounded-lg bg-surface-overlay flex items-center justify-center`}>
                   <p className="text-sm text-zinc-500">No screenshot available</p>
                 </div>
               )}
@@ -464,6 +619,30 @@ export default function DeviceDetail() {
         </div>
 
         <div className="space-y-4">
+          {canManage && (
+            <div className="card">
+              <h2 className="text-sm font-semibold text-zinc-200 mb-3">Remote Commands</h2>
+              <p className="text-xs text-zinc-600 mb-3">Quick controls for this player.</p>
+              <div className="grid grid-cols-2 gap-2">
+                {remoteCommands.map(({ cmd, label, Icon, params }) => (
+                  <button
+                    key={label}
+                    onClick={() => sendCommand(cmd, params)}
+                    disabled={!!pendingCmd}
+                    className="btn-secondary text-xs disabled:opacity-50"
+                  >
+                    {pendingCmd === cmd ? (
+                      <Loader2 size={13} className="animate-spin" />
+                    ) : (
+                      <Icon size={13} />
+                    )}
+                    {pendingCmd === cmd ? 'Sending...' : label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+
           <div className="card">
             <h2 className="text-sm font-semibold text-zinc-200 mb-3">Player Role</h2>
             {canManage ? (
@@ -658,59 +837,6 @@ export default function DeviceDetail() {
             )}
           </div>
 
-          <div className="card">
-            <div className="flex items-center justify-between mb-3">
-              <h2 className="text-sm font-semibold text-zinc-200 flex items-center gap-1.5">
-                <MapPin size={14} className="text-emerald-400" /> Location
-              </h2>
-              {canManage && !editingLocation && (
-                <button onClick={() => setEditingLocation(true)} className="text-xs text-accent hover:underline">
-                  {device.location_name ? 'Edit' : 'Add'}
-                </button>
-              )}
-            </div>
-            {canManage && editingLocation ? (
-              <div className="space-y-2">
-                <input type="text" placeholder="Location name" value={locationForm.location_name}
-                  onChange={(e) => setLocationForm(f => ({ ...f, location_name: e.target.value }))} className="w-full text-xs" />
-                <input type="text" placeholder="Street address" value={locationForm.location_address}
-                  onChange={(e) => setLocationForm(f => ({ ...f, location_address: e.target.value }))} className="w-full text-xs" />
-                <div className="grid grid-cols-2 gap-2">
-                  <input type="text" placeholder="City" value={locationForm.location_city}
-                    onChange={(e) => setLocationForm(f => ({ ...f, location_city: e.target.value }))} className="text-xs" />
-                  <input type="text" placeholder="State" value={locationForm.location_state}
-                    onChange={(e) => setLocationForm(f => ({ ...f, location_state: e.target.value }))} className="text-xs" />
-                </div>
-                <div className="grid grid-cols-2 gap-2">
-                  <input type="text" placeholder="ZIP" value={locationForm.location_zip}
-                    onChange={(e) => setLocationForm(f => ({ ...f, location_zip: e.target.value }))} className="text-xs" />
-                  <input type="text" placeholder="Country" value={locationForm.location_country}
-                    onChange={(e) => setLocationForm(f => ({ ...f, location_country: e.target.value }))} className="text-xs" />
-                </div>
-                <textarea placeholder="Notes" value={locationForm.location_notes} rows={2}
-                  onChange={(e) => setLocationForm(f => ({ ...f, location_notes: e.target.value }))} className="w-full text-xs" />
-                <div className="flex gap-2">
-                  <button onClick={handleSaveLocation} className="btn-primary text-xs flex-1"><Save size={12} /> Save</button>
-                  <button onClick={() => setEditingLocation(false)} className="btn-ghost text-xs">Cancel</button>
-                </div>
-              </div>
-            ) : device.location_name ? (
-              <div className="space-y-1 text-xs">
-                <p className="text-zinc-200 font-medium">{device.location_name}</p>
-                {device.location_address && <p className="text-zinc-400">{device.location_address}</p>}
-                {(device.location_city || device.location_state) && (
-                  <p className="text-zinc-400">
-                    {[device.location_city, device.location_state, device.location_zip].filter(Boolean).join(', ')}
-                  </p>
-                )}
-                {device.location_country && <p className="text-zinc-500">{device.location_country}</p>}
-                {device.location_notes && <p className="text-zinc-600 mt-1 italic">{device.location_notes}</p>}
-              </div>
-            ) : (
-              <p className="text-xs text-zinc-600">No location set</p>
-            )}
-          </div>
-
           {canManage && (
             <>
               <div className="card">
@@ -777,34 +903,6 @@ export default function DeviceDetail() {
                   {device.status !== 'online' && device.needs_player_update && (
                     <p className="text-[11px] text-zinc-600">Offline updates are queued and sent when the Pi reconnects.</p>
                   )}
-                </div>
-              </div>
-
-              <div className="card">
-                <h2 className="text-sm font-semibold text-zinc-200 mb-3">Remote Commands</h2>
-                <div className="grid grid-cols-2 gap-2">
-                  {[
-                    { cmd: 'reboot', label: 'Reboot', Icon: Power },
-                    { cmd: 'restart_player', label: 'Restart', Icon: RotateCw },
-                    { cmd: 'screenshot', label: 'Screenshot', Icon: Camera },
-                    { cmd: 'refresh', label: 'Refresh', Icon: RotateCw },
-                    { cmd: 'display_power', label: 'TV On', Icon: Monitor, params: { state: 'on' } },
-                    { cmd: 'display_power', label: 'TV Off', Icon: Power, params: { state: 'off' } },
-                  ].map(({ cmd, label, Icon, params }) => (
-                    <button
-                      key={label}
-                      onClick={() => sendCommand(cmd, params)}
-                      disabled={!!pendingCmd}
-                      className="btn-secondary text-xs disabled:opacity-50"
-                    >
-                      {pendingCmd === cmd ? (
-                        <Loader2 size={13} className="animate-spin" />
-                      ) : (
-                        <Icon size={13} />
-                      )}
-                      {pendingCmd === cmd ? 'Sending...' : label}
-                    </button>
-                  ))}
                 </div>
               </div>
 
