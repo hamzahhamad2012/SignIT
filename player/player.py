@@ -28,12 +28,13 @@ import psutil
 from config import load_config, save_config, CACHE_DIR, LOG_DIR
 
 CONTENT_SERVER_PORT = 8889
-PLAYER_VERSION = '1.6.11'
+PLAYER_VERSION = '1.6.16'
 STREAM_LOG_PATH = os.path.join(LOG_DIR, 'stream-player.log')
 CHROMIUM_LOG_PATH = os.path.join(LOG_DIR, 'chromium.log')
 DISPLAY_DIAGNOSTICS_PATH = os.path.join(LOG_DIR, 'display-diagnostics.json')
 CHROMIUM_DEFAULT_FLAGS = '/etc/chromium.d/default-flags'
 CHROMIUM_BACKUP_DIR = '/var/backups/signit/chromium.d'
+CHROMIUM_PROFILE_DIR = '/tmp/signit-chromium-profile'
 BLACK_SCREEN_CHECK_INTERVAL = 30
 BLACK_SCREEN_RECOVERY_COOLDOWN = 90
 UPDATE_FILES = {
@@ -86,6 +87,8 @@ class SignITPlayer:
         self.last_black_screen_recovery = 0
         self.force_software_chromium_until = 0
         self.last_fullscreen_enforce = 0
+        self.chromium_launch_lock = threading.Lock()
+        self.xdotool_usable = None
         self.sio = socketio.Client(reconnection=True, reconnection_delay=5)
         self._setup_socket()
         self._repair_chromium_defaults()
@@ -400,15 +403,47 @@ class SignITPlayer:
         if not output:
             raise RuntimeError('no connected display output found')
 
+        mode = self._configured_xrandr_mode(query.stdout, output)
+        command = ['xrandr', '--output', output]
+        if mode:
+            command.extend(['--mode', mode])
+        command.extend(['--rotate', rotation_info['xrandr']])
+
         result = subprocess.run(
-            ['xrandr', '--output', output, '--rotate', rotation_info['xrandr']],
+            command,
             capture_output=True, text=True, env=env, timeout=10
         )
         if result.returncode != 0:
             raise RuntimeError(result.stderr.strip() or 'xrandr rotate failed')
 
-        log.info(f'Applied display orientation via xrandr: {output} -> {rotation_info["xrandr"]}')
+        mode_label = f' at {mode}' if mode else ''
+        log.info(f'Applied display orientation via xrandr: {output}{mode_label} -> {rotation_info["xrandr"]}')
         return True
+
+    def _configured_xrandr_mode(self, query_output, output):
+        """Return the configured resolution if the connected output advertises it."""
+        configured = self._parse_resolution(self.config.get('resolution'))
+        if not configured:
+            return None
+
+        target = f'{configured[0]}x{configured[1]}'
+        in_output = False
+        for line in query_output.splitlines():
+            if ' connected' in line:
+                in_output = line.split()[0] == output
+                continue
+            if not in_output:
+                continue
+            stripped = line.strip()
+            if not stripped:
+                continue
+            if ' connected' in stripped or ' disconnected' in stripped:
+                break
+            if stripped.startswith(target):
+                return target
+
+        log.warning(f'Configured resolution {target} is not available on {output}; leaving current xrandr mode')
+        return None
 
     def _apply_orientation_wlrandr(self, rotation_info, env):
         if shutil.which('wlr-randr') is None:
@@ -551,6 +586,18 @@ class SignITPlayer:
             return
 
         window_ids = self._chromium_window_ids()
+        window_detection_available = self._has_working_xdotool()
+
+        if not window_detection_available:
+            if self.chromium_proc and self.chromium_proc.poll() is None:
+                log.debug('Chromium process is alive; skipping window verification because xdotool is unavailable')
+                return
+            if self._chromium_process_ids():
+                log.warning('Chromium process exists without xdotool verification; leaving it running')
+                return
+            log.warning('No Chromium process found and xdotool is unavailable; relaunching browser session')
+            self._launch_chromium()
+            return
 
         if self.chromium_proc and self.chromium_proc.poll() is not None:
             exit_code = self.chromium_proc.returncode
@@ -1128,6 +1175,14 @@ class SignITPlayer:
                     return
                 time.sleep(0.4)
 
+    def _reset_chromium_profile(self):
+        """Use a clean kiosk-only Chromium profile so stale browser sessions cannot hijack launches."""
+        try:
+            shutil.rmtree(CHROMIUM_PROFILE_DIR, ignore_errors=True)
+            os.makedirs(CHROMIUM_PROFILE_DIR, exist_ok=True)
+        except Exception as e:
+            log.warning(f'Could not reset Chromium kiosk profile: {e}')
+
     def _ensure_stream_player_alive(self):
         if self.active_stream_wall and self.stream_procs:
             dead = [entry for entry in self.stream_procs if entry.get('proc') and entry['proc'].poll() is not None]
@@ -1206,6 +1261,9 @@ class SignITPlayer:
 
     def _chromium_window_ids(self):
         """Return the currently visible Chromium window ids."""
+        if not self._has_working_xdotool():
+            return []
+
         env = os.environ.copy()
         env.setdefault('DISPLAY', ':0')
         seen = []
@@ -1227,6 +1285,32 @@ class SignITPlayer:
             except Exception:
                 continue
         return seen
+
+    def _has_working_xdotool(self):
+        """Return whether xdotool can run; a broken xdotool must not cause kiosk relaunch loops."""
+        if self.xdotool_usable is not None:
+            return self.xdotool_usable
+
+        binary = shutil.which('xdotool')
+        if not binary:
+            log.warning('xdotool is not installed; Chromium will be adopted by process health only')
+            self.xdotool_usable = False
+            return False
+
+        try:
+            result = subprocess.run(
+                [binary, '--version'],
+                capture_output=True, text=True, timeout=5
+            )
+            self.xdotool_usable = result.returncode == 0
+            if not self.xdotool_usable:
+                detail = (result.stderr or result.stdout or '').strip()
+                log.warning(f'xdotool is installed but unusable; Chromium will be adopted by process health only: {detail}')
+            return self.xdotool_usable
+        except Exception as e:
+            self.xdotool_usable = False
+            log.warning(f'xdotool check failed; Chromium will be adopted by process health only: {e}')
+            return False
 
     def _chromium_process_ids(self):
         """Return Chromium process ids owned by the SignIT user."""
@@ -1258,6 +1342,10 @@ class SignITPlayer:
     def _check_black_screen(self):
         if not self._should_monitor_browser_playlist():
             self.black_screen_hits = 0
+            return
+
+        if self.chromium_launch_lock.locked():
+            log.debug('Black-screen probe skipped while Chromium launch is in progress')
             return
 
         probe_path = os.path.join(CACHE_DIR, 'black-screen-probe.png')
@@ -1605,8 +1693,52 @@ class SignITPlayer:
         log.info('Falling back to 1920x1080')
         return 1920, 1080
 
+    def _parse_resolution(self, value):
+        if not value:
+            return None
+        try:
+            width, height = str(value).lower().split('x', 1)
+            width = int(width.strip())
+            height = int(height.strip())
+            if width >= 320 and height >= 240:
+                return width, height
+        except Exception:
+            return None
+        return None
+
+    def _get_chromium_window_resolution(self):
+        """Choose a stable Chromium surface size instead of blindly using rotated framebuffer size."""
+        detected_w, detected_h = self._get_screen_resolution()
+        configured = self._parse_resolution(self.config.get('resolution'))
+        if not configured:
+            return detected_w, detected_h
+
+        config_w, config_h = configured
+        detected_pixels = detected_w * detected_h
+        configured_pixels = config_w * config_h
+
+        if detected_pixels > configured_pixels and configured_pixels <= 1920 * 1080:
+            log.warning(
+                f'Using configured Chromium surface {config_w}x{config_h} instead of '
+                f'detected {detected_w}x{detected_h} to avoid Pi GPU allocation failures'
+            )
+            return config_w, config_h
+
+        return detected_w, detected_h
+
     def _launch_chromium(self):
         """Launch or refresh Chromium in kiosk mode."""
+        if not self.chromium_launch_lock.acquire(blocking=False):
+            log.info('Chromium launch already in progress; skipping duplicate launch request')
+            return
+
+        try:
+            self._launch_chromium_once()
+        finally:
+            self.chromium_launch_lock.release()
+
+    def _launch_chromium_once(self):
+        """Launch or refresh Chromium in kiosk mode. Caller must hold chromium_launch_lock."""
         display_url = f'http://127.0.0.1:{CONTENT_SERVER_PORT}/display.html'
 
         if self.chromium_proc and self.chromium_proc.poll() is None:
@@ -1625,12 +1757,13 @@ class SignITPlayer:
             log.error('Chromium not found')
             return
 
-        screen_w, screen_h = self._get_screen_resolution()
+        screen_w, screen_h = self._get_chromium_window_resolution()
         if self._should_use_software_chromium():
             log.warning('Using Chromium software-rendering launch path for this media session')
 
-        if self._chromium_window_ids():
+        if self._chromium_window_ids() or self._chromium_process_ids():
             self._stop_unmanaged_chromium()
+        self._reset_chromium_profile()
 
         env = os.environ.copy()
         env.setdefault('DISPLAY', ':0')
@@ -1639,17 +1772,21 @@ class SignITPlayer:
             log.info(f'Launching Chromium ({label}) at {screen_w}x{screen_h}: {display_url}')
             log_file = self._open_chromium_log(label, cmd)
             proc = subprocess.Popen(cmd, env=env, stdout=log_file, stderr=log_file)
+            can_detect_windows = self._has_working_xdotool()
             window_ids = self._wait_for_chromium_window(proc, timeout=12)
 
-            if proc.poll() is None and window_ids:
+            if proc.poll() is None and (window_ids or not can_detect_windows):
                 self.chromium_proc = proc
                 self.chromium_log_file = log_file
-                threading.Thread(
-                    target=self._force_fullscreen,
-                    args=(screen_w, screen_h),
-                    kwargs={'window_ids': window_ids},
-                    daemon=True,
-                ).start()
+                if window_ids:
+                    threading.Thread(
+                        target=self._force_fullscreen,
+                        args=(screen_w, screen_h),
+                        kwargs={'window_ids': window_ids},
+                        daemon=True,
+                    ).start()
+                else:
+                    log.warning('Adopted live Chromium process without xdotool window verification')
                 return
 
             exit_code = proc.poll()
@@ -1674,10 +1811,16 @@ class SignITPlayer:
         log.error(f'All Chromium launch attempts failed. Last Chromium output: {self._tail_chromium_log()[-1200:]}')
 
     def _chromium_launch_candidates(self, chromium_cmd, display_url, screen_w, screen_h):
+        profile_flags = [
+            f'--user-data-dir={CHROMIUM_PROFILE_DIR}',
+            '--disable-dev-shm-usage',
+            '--disable-background-networking',
+            '--disable-sync',
+        ]
         configured = self._sanitize_chromium_flags(self.config.get('chromium_flags', []))
-        configured.extend([f'--window-size={screen_w},{screen_h}', '--window-position=0,0'])
+        configured = profile_flags + configured + [f'--window-size={screen_w},{screen_h}', '--window-position=0,0']
 
-        safe = [
+        safe = profile_flags + [
             '--kiosk',
             '--noerrdialogs',
             '--disable-infobars',
@@ -1689,7 +1832,7 @@ class SignITPlayer:
             '--window-position=0,0',
         ]
 
-        app_mode = [
+        app_mode = profile_flags + [
             '--noerrdialogs',
             '--disable-infobars',
             '--no-first-run',
@@ -1744,6 +1887,7 @@ class SignITPlayer:
             '--window-size=',
             '--window-position=',
             '--remote-debugging-port=',
+            '--user-data-dir=',
         )
         clean = []
         for flag in flags or []:
@@ -1764,6 +1908,15 @@ class SignITPlayer:
         return chromium_log
 
     def _wait_for_chromium_window(self, proc, timeout=12):
+        if not self._has_working_xdotool():
+            grace = min(timeout, 5)
+            deadline = time.time() + grace
+            while time.time() < deadline:
+                if proc.poll() is not None:
+                    return []
+                time.sleep(0.5)
+            return []
+
         deadline = time.time() + timeout
         while time.time() < deadline:
             window_ids = self._chromium_window_ids()
@@ -1854,6 +2007,10 @@ class SignITPlayer:
 
     def _force_fullscreen(self, screen_w, screen_h, attempts=8, delay=2, window_ids=None):
         """Use xdotool to force Chromium window to fill entire screen."""
+        if not self._has_working_xdotool():
+            log.warning('Skipping fullscreen enforcement because xdotool is unavailable or broken')
+            return
+
         env = os.environ.copy()
         env.setdefault('DISPLAY', ':0')
         for attempt in range(attempts):

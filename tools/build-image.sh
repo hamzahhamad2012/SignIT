@@ -118,7 +118,7 @@ apt-get -f install -y 2>/dev/null || true
 
 echo ">>> Installing extras…"
 apt-get install -y --no-install-recommends \
-  python3-venv scrot xdotool wlr-randr unclutter-xfixes ffmpeg mpv 2>&1 || true
+  python3-venv scrot xdotool libxdo3 wlr-randr unclutter-xfixes ffmpeg mpv 2>&1 || true
 
 # Verify desktop packages (already in Pi OS Desktop image)
 for pkg in chromium lightdm python3; do
@@ -268,6 +268,7 @@ if [ -f "$CONF" ] && grep -q '"configured"' "$CONF" 2>/dev/null; then
   # ─── PLAYER MODE ───
   while true; do
     pkill -TERM -u "$(id -u)" -f chromium 2>/dev/null || true
+    rm -rf /tmp/signit-chromium-profile
     sleep 1
     $VENV_PY /opt/signit/player.py
     sleep 5
