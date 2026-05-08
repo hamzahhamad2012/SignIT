@@ -118,7 +118,7 @@ apt-get -f install -y 2>/dev/null || true
 
 echo ">>> Installing extras…"
 apt-get install -y --no-install-recommends \
-  python3-venv scrot xdotool libxdo3 wlr-randr unclutter-xfixes ffmpeg mpv 2>&1 || true
+  python3-venv scrot xdotool libxdo3 wlr-randr unclutter-xfixes ffmpeg mpv 2>&1
 
 # Verify desktop packages (already in Pi OS Desktop image)
 for pkg in chromium lightdm python3; do
@@ -471,6 +471,20 @@ WIFISVC
 systemctl enable signit-wifi.service 2>/dev/null || true
 
 # ── H. Clean up ──────────────────────────────────────────────────────────────
+echo ">>> Verifying package database and kiosk dependencies…"
+if [ ! -s /var/lib/dpkg/status ]; then
+  echo "ERROR: /var/lib/dpkg/status is missing. Refusing to ship an unrepairable image."
+  exit 1
+fi
+if ! dpkg -s xdotool libxdo3 >/dev/null 2>&1; then
+  echo "ERROR: xdotool/libxdo3 are not fully installed."
+  exit 1
+fi
+if command -v xdotool >/dev/null 2>&1 && ldd "$(command -v xdotool)" 2>/dev/null | grep -q 'not found'; then
+  echo "ERROR: xdotool has missing shared libraries."
+  exit 1
+fi
+
 apt-get clean
 rm -rf /var/lib/apt/lists/* /tmp/staging
 

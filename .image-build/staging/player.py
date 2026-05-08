@@ -28,7 +28,7 @@ import psutil
 from config import load_config, save_config, CACHE_DIR, LOG_DIR
 
 CONTENT_SERVER_PORT = 8889
-PLAYER_VERSION = '1.6.16'
+PLAYER_VERSION = '1.6.17'
 STREAM_LOG_PATH = os.path.join(LOG_DIR, 'stream-player.log')
 CHROMIUM_LOG_PATH = os.path.join(LOG_DIR, 'chromium.log')
 DISPLAY_DIAGNOSTICS_PATH = os.path.join(LOG_DIR, 'display-diagnostics.json')
@@ -88,6 +88,11 @@ class SignITPlayer:
         self.force_software_chromium_until = 0
         self.last_fullscreen_enforce = 0
         self.chromium_launch_lock = threading.Lock()
+        self.content_refresh_run_lock = threading.Lock()
+        self.content_refresh_state_lock = threading.Lock()
+        self.content_refresh_pending = False
+        self.content_refresh_reason = None
+        self.content_refresh_thread = None
         self.xdotool_usable = None
         self.sio = socketio.Client(reconnection=True, reconnection_delay=5)
         self._setup_socket()
@@ -114,10 +119,10 @@ class SignITPlayer:
             elif cmd == 'screenshot':
                 self._take_screenshot()
             elif cmd == 'refresh':
-                self._refresh_content()
+                self._request_content_refresh('command:refresh')
             elif cmd == 'refresh_config':
                 self._refresh_device_config(force_restart=True)
-                self._refresh_content()
+                self._request_content_refresh('command:refresh_config')
             elif cmd == 'update_player':
                 threading.Thread(target=self._update_player, args=(params,), daemon=True).start()
             elif cmd == 'display_power':
@@ -126,13 +131,15 @@ class SignITPlayer:
         @self.sio.on('playlist:deploy')
         def on_playlist_deploy(data):
             log.info(f'Playlist deployment received: {data}')
-            self._refresh_content()
+            reason = data.get('reason') or 'playlist_deploy'
+            playlist_id = data.get('playlistId')
+            self._request_content_refresh(f'playlist:deploy:{reason}:{playlist_id}')
 
         @self.sio.on('playlist:updated')
         def on_playlist_updated(data):
             if self.current_playlist and data.get('playlistId') == self.current_playlist.get('id'):
                 log.info('Current playlist updated, refreshing...')
-                self._refresh_content()
+                self._request_content_refresh(f'playlist:updated:{data.get("playlistId")}')
 
     def _get_mac_address(self):
         """Get the primary MAC address of this Pi — hardware identity that survives reflashes."""
@@ -232,11 +239,7 @@ class SignITPlayer:
         """Periodically check for playlist updates."""
         time.sleep(self.config.get('playlist_check_interval', 15))
         while self.running:
-            try:
-                self._refresh_content()
-            except Exception as e:
-                log.error(f'Playlist check failed: {e}')
-
+            self._request_content_refresh('periodic_playlist_check')
             time.sleep(self.config.get('playlist_check_interval', 15))
 
     def periodic_screenshot(self):
@@ -259,6 +262,12 @@ class SignITPlayer:
 
     def _refresh_content(self):
         """Fetch and display the latest playlist."""
+        if not self.content_refresh_run_lock.acquire(blocking=False):
+            self._mark_content_refresh_pending('refresh_already_running')
+            log.info('Content refresh already running; coalesced another refresh request')
+            time.sleep(0.5)
+            return
+
         try:
             res = self._api_get('/api/player/playlist', device_header=True)
             self._apply_server_config(res.get('config'), force_restart=False)
@@ -337,6 +346,42 @@ class SignITPlayer:
             log.error(f'Content refresh failed: {e}')
             if self.sio.connected:
                 self.sio.emit('player:error', {'error': str(e)})
+        finally:
+            self.content_refresh_run_lock.release()
+
+    def _mark_content_refresh_pending(self, reason):
+        with self.content_refresh_state_lock:
+            self.content_refresh_pending = True
+            self.content_refresh_reason = reason
+
+    def _request_content_refresh(self, reason='manual'):
+        """Queue content refresh work without blocking socket or heartbeat threads."""
+        start_worker = False
+        with self.content_refresh_state_lock:
+            self.content_refresh_pending = True
+            self.content_refresh_reason = reason
+            worker_alive = self.content_refresh_thread and self.content_refresh_thread.is_alive()
+            if worker_alive:
+                log.info(f'Content refresh queued while worker is active: {reason}')
+                return
+            self.content_refresh_thread = threading.Thread(target=self._content_refresh_worker, daemon=True)
+            start_worker = True
+
+        if start_worker:
+            self.content_refresh_thread.start()
+
+    def _content_refresh_worker(self):
+        while self.running:
+            with self.content_refresh_state_lock:
+                if not self.content_refresh_pending:
+                    self.content_refresh_thread = None
+                    return
+                reason = self.content_refresh_reason or 'queued'
+                self.content_refresh_pending = False
+                self.content_refresh_reason = None
+
+            log.info(f'Running queued content refresh: {reason}')
+            self._refresh_content()
 
     def _refresh_device_config(self, force_restart=False):
         """Pull device settings from the server and apply display-level changes."""
@@ -2459,7 +2504,7 @@ class SignITPlayer:
         black_screen_thread = threading.Thread(target=self.black_screen_watchdog, daemon=True)
         black_screen_thread.start()
 
-        self._refresh_content()
+        self._request_content_refresh('startup')
 
         def shutdown(sig, frame):
             log.info('Shutting down...')
