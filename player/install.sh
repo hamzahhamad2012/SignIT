@@ -24,22 +24,33 @@ read -p "Enter SignIT server URL (e.g., http://192.168.1.100:4000): " SERVER_URL
 read -p "Enter display name (or press Enter for auto): " DEVICE_NAME
 
 echo ""
-echo "[1/6] Updating system packages..."
+echo "[1/7] Updating system packages..."
 apt-get update -qq
 apt-get install -y -qq python3 python3-pip python3-venv chromium-browser \
   xdotool libxdo3 scrot wlr-randr unclutter xserver-xorg x11-xserver-utils xinit \
   ffmpeg mpv > /dev/null 2>&1
 
-echo "[2/6] Creating installation directory..."
+echo "[2/7] Creating installation directory..."
 mkdir -p "$SIGNIT_DIR"
 mkdir -p ~/.signit/cache ~/.signit/logs
 
-echo "[3/6] Setting up Python environment..."
+echo "[3/7] Enabling persistent diagnostics..."
+mkdir -p /var/log/journal /etc/systemd/journald.conf.d
+cat > /etc/systemd/journald.conf.d/signit-persistent.conf << EOF
+[Journal]
+Storage=persistent
+SystemMaxUse=200M
+RuntimeMaxUse=50M
+MaxRetentionSec=14day
+EOF
+systemctl restart systemd-journald >/dev/null 2>&1 || true
+
+echo "[4/7] Setting up Python environment..."
 python3 -m venv "$VENV_DIR"
 cp -r "$(dirname "$0")"/* "$SIGNIT_DIR/"
 "$VENV_DIR/bin/pip" install -q -r "$SIGNIT_DIR/requirements.txt"
 
-echo "[4/6] Configuring player..."
+echo "[5/7] Configuring player..."
 CONFIG_FILE="$HOME/.signit/config.json"
 cat > "$CONFIG_FILE" << EOF
 {
@@ -54,7 +65,7 @@ cat > "$CONFIG_FILE" << EOF
 }
 EOF
 
-echo "[5/6] Creating systemd service..."
+echo "[6/7] Creating systemd service..."
 cat > "$SERVICE_FILE" << EOF
 [Unit]
 Description=SignIT Digital Signage Player
@@ -78,7 +89,7 @@ EOF
 systemctl daemon-reload
 systemctl enable signit-player
 
-echo "[6/6] Configuring auto-start and display settings..."
+echo "[7/7] Configuring auto-start and display settings..."
 
 # Disable screen blanking
 mkdir -p /etc/X11/xorg.conf.d

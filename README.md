@@ -492,6 +492,39 @@ This is intentionally more flexible than a simple portrait toggle because real i
 
 ---
 
+## Raspberry Pi Outage Diagnostics
+
+Current SignIT images and installers enable persistent Pi journals automatically. That matters because power cuts, PoE interruptions, kernel crashes, and pre-reboot player failures are otherwise lost after a reboot.
+
+If a Pi unexpectedly goes offline and comes back:
+
+```bash
+ssh signit@PI_LOCAL_IP
+journalctl --list-boots --no-pager
+journalctl -b -1 -u signit-display -n 200 --no-pager
+journalctl -b -1 -p warning..alert --no-pager
+vcgencmd get_throttled
+vcgencmd measure_temp
+tail -n 200 /opt/signit/logs/player.log
+```
+
+What to look for:
+
+- `journalctl -b -1` shows the previous boot. If it is missing, the Pi was installed before persistent diagnostics were added.
+- `throttled=0x0` means the current boot has not recorded undervoltage or thermal throttling. A complete PoE power loss can still leave no Pi-side evidence.
+- `signit-display` restarts without a full system boot usually points at player/browser failure.
+- A new boot with no graceful shutdown usually points at PoE, switch power, cable, OS crash, or hard lock.
+
+To enable the same diagnostic protection manually on an older Pi:
+
+```bash
+sudo mkdir -p /var/log/journal /etc/systemd/journald.conf.d
+printf '%s\n' '[Journal]' 'Storage=persistent' 'SystemMaxUse=200M' 'RuntimeMaxUse=50M' 'MaxRetentionSec=14day' | sudo tee /etc/systemd/journald.conf.d/signit-persistent.conf >/dev/null
+sudo systemctl restart systemd-journald
+```
+
+---
+
 ## Key Dashboard Areas
 
 | Page | Purpose |

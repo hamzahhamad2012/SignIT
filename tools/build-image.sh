@@ -166,6 +166,17 @@ rm -f /etc/xdg/autostart/piwiz.desktop 2>/dev/null || true
 echo "signit ALL=(ALL) NOPASSWD: ALL" > /etc/sudoers.d/010-signit
 chmod 440 /etc/sudoers.d/010-signit
 
+# Keep a small persistent system journal so power cuts, kernel crashes, and
+# pre-reboot service failures survive the reboot for real field diagnostics.
+mkdir -p /var/log/journal /etc/systemd/journald.conf.d
+cat > /etc/systemd/journald.conf.d/signit-persistent.conf << 'JOURNALEOF'
+[Journal]
+Storage=persistent
+SystemMaxUse=200M
+RuntimeMaxUse=50M
+MaxRetentionSec=14day
+JOURNALEOF
+
 # ── C. SignIT player files ────────────────────────────────────────────────────
 echo ">>> Copying SignIT files…"
 SIGNIT=/opt/signit

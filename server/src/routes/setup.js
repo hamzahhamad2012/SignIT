@@ -386,6 +386,20 @@ install_deps() {
   echo -e "  \${GREEN}Done\${NC}"
 }
 
+enable_persistent_diagnostics() {
+  echo -e "\${BOLD}[diag] Enabling persistent diagnostics...\${NC}"
+  mkdir -p /var/log/journal /etc/systemd/journald.conf.d
+  cat > /etc/systemd/journald.conf.d/signit-persistent.conf << JOURNALEOF
+[Journal]
+Storage=persistent
+SystemMaxUse=200M
+RuntimeMaxUse=50M
+MaxRetentionSec=14day
+JOURNALEOF
+  systemctl restart systemd-journald > /dev/null 2>&1 || true
+  echo -e "  \${GREEN}Done\${NC}"
+}
+
 setup_player() {
   echo -e "\${BOLD}[2/5] Installing SignIT player...\${NC}"
   mkdir -p "$SIGNIT_DIR" "$CONFIG_DIR/cache" "$CONFIG_DIR/logs"
@@ -541,6 +555,7 @@ check_root
 get_pairing_code
 configure_wifi
 install_deps
+enable_persistent_diagnostics
 setup_player
 pair_device
 setup_service
@@ -748,6 +763,19 @@ apt-get update -qq
 apt-get install -y -qq python3 python3-pip python3-venv chromium-browser \\
   xdotool scrot wlr-randr unclutter xserver-xorg x11-xserver-utils xinit \\
   libatlas-base-dev lightdm ffmpeg mpv 2>/dev/null || true
+echo "  Done"
+
+# ─── 2b. Keep diagnostics across reboots ───
+echo "[2b/7] Enabling persistent diagnostics..."
+mkdir -p /var/log/journal /etc/systemd/journald.conf.d
+cat > /etc/systemd/journald.conf.d/signit-persistent.conf << 'JOURNALEOF'
+[Journal]
+Storage=persistent
+SystemMaxUse=200M
+RuntimeMaxUse=50M
+MaxRetentionSec=14day
+JOURNALEOF
+systemctl restart systemd-journald >/dev/null 2>&1 || true
 echo "  Done"
 
 # ─── 3. Copy player files ───
