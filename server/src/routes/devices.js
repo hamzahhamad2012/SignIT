@@ -2,16 +2,17 @@ import { Router } from 'express';
 import { nanoid } from 'nanoid';
 import db from '../db/index.js';
 import { authenticateToken, requireManagementAccess } from '../middleware/auth.js';
-import { refreshDevices } from '../services/schedulerRuntime.js';
+import { refreshDevices, refreshDevicesForSchedules } from '../services/schedulerRuntime.js';
 import { buildDeviceAccessClause, userCanAccessDevice } from '../services/userAccess.js';
 import { logActivity } from '../services/activityLog.js';
 import { getLatestPlayerVersion, isPlayerOutdated } from '../services/playerVersion.js';
 import { queuePlayerUpdate, sendQueuedPlayerUpdate } from '../services/playerUpdates.js';
 import { DISPLAY_ROTATIONS, getDeviceDisplayRotation, getDisplayRotation } from '../services/displayRotation.js';
-import { isSystemPlaylist } from '../services/systemPlaylists.js';
+import { decoratePlaylist, isSystemPlaylist } from '../services/systemPlaylists.js';
 
 const router = Router();
 const PLAYER_MODES = new Set(['media', 'stream']);
+const DEFAULT_QUIET_DAYS = '0,1,2,3,4,5,6';
 
 function normalizePlayerMode(value) {
   return PLAYER_MODES.has(value) ? value : 'media';
@@ -36,6 +37,130 @@ function annotatePlayerVersion(device, latestVersion = getLatestPlayerVersion())
 function hasLiveDeviceSocket(io, deviceId) {
   const room = io.sockets.adapter.rooms.get(`device:${deviceId}`);
   return Boolean(room && room.size > 0);
+}
+
+function emptyToNull(value) {
+  if (value === undefined) return undefined;
+  if (value === null) return null;
+  const trimmed = String(value).trim();
+  return trimmed === '' ? null : trimmed;
+}
+
+function normalizeQuietTime(value, field) {
+  const normalized = emptyToNull(value);
+  if (normalized === undefined || normalized === null) return normalized;
+  if (!/^\d{2}:\d{2}$/.test(normalized)) throw new Error(`Invalid ${field}`);
+  const [hour, minute] = normalized.split(':').map(Number);
+  if (hour > 23 || minute > 59) throw new Error(`Invalid ${field}`);
+  return normalized;
+}
+
+function normalizeQuietDays(value) {
+  const normalized = emptyToNull(value);
+  if (normalized === undefined || normalized === null) return DEFAULT_QUIET_DAYS;
+
+  const days = [...new Set(
+    String(normalized)
+      .split(',')
+      .map(day => day.trim())
+      .filter(Boolean),
+  )].sort((left, right) => Number(left) - Number(right));
+
+  if (!days.length || days.some(day => !/^[0-6]$/.test(day))) {
+    throw new Error('Select at least one valid quiet-hours day');
+  }
+
+  return days.join(',');
+}
+
+function getTvOffPlaylist() {
+  return db.prepare(`
+    SELECT *
+    FROM playlists
+    WHERE name = 'TV_OFF' OR layout_config LIKE '%"system_action":"display_off"%'
+       OR layout_config LIKE '%"system_action": "display_off"%'
+    ORDER BY CASE WHEN name = 'TV_OFF' THEN 0 ELSE 1 END, id DESC
+    LIMIT 1
+  `).get();
+}
+
+function decorateQuietSchedule(schedule) {
+  if (!schedule) return null;
+  const decorated = decoratePlaylist({ layout_config: schedule.playlist_layout_config || '{}' });
+  schedule.system_action = decorated.system_action;
+  schedule.is_system_playlist = decorated.is_system;
+  schedule.is_active = Boolean(schedule.is_active);
+  delete schedule.playlist_layout_config;
+  return schedule;
+}
+
+function getDirectQuietSchedules(deviceId) {
+  return db.prepare(`
+    SELECT s.*, p.name as playlist_name, p.layout_config as playlist_layout_config,
+           d.name as device_name, g.name as group_name
+    FROM schedules s
+    JOIN playlists p ON p.id = s.playlist_id
+    LEFT JOIN devices d ON d.id = s.device_id
+    LEFT JOIN groups g ON g.id = s.group_id
+    WHERE s.device_id = ?
+      AND (p.name = 'TV_OFF' OR p.layout_config LIKE '%display_off%')
+    ORDER BY s.is_active DESC, s.priority DESC, s.id DESC
+  `).all(deviceId);
+}
+
+function getInheritedQuietSchedule(device) {
+  if (!device?.group_id) return null;
+
+  return db.prepare(`
+    SELECT s.*, p.name as playlist_name, p.layout_config as playlist_layout_config,
+           d.name as device_name, g.name as group_name
+    FROM schedules s
+    JOIN playlists p ON p.id = s.playlist_id
+    LEFT JOIN devices d ON d.id = s.device_id
+    LEFT JOIN groups g ON g.id = s.group_id
+    WHERE s.group_id = ?
+      AND (p.name = 'TV_OFF' OR p.layout_config LIKE '%display_off%')
+    ORDER BY s.is_active DESC, s.priority DESC, s.id DESC
+    LIMIT 1
+  `).get(device.group_id);
+}
+
+function getQuietHoursState(deviceId) {
+  const device = db.prepare('SELECT id, name, group_id FROM devices WHERE id = ?').get(deviceId);
+  if (!device) return null;
+
+  const directSchedules = getDirectQuietSchedules(deviceId);
+  const directSchedule = decorateQuietSchedule(directSchedules[0]);
+  const inheritedSchedule = decorateQuietSchedule(getInheritedQuietSchedule(device));
+  const activeDirectSchedule = directSchedule?.is_active ? directSchedule : null;
+  const activeInheritedSchedule = inheritedSchedule?.is_active ? inheritedSchedule : null;
+  const effectiveSchedule = activeDirectSchedule || activeInheritedSchedule || null;
+
+  return {
+    source: activeDirectSchedule ? 'device' : activeInheritedSchedule ? 'group' : directSchedule ? 'device' : 'none',
+    schedule: directSchedule,
+    inherited_schedule: inheritedSchedule,
+    effective_schedule: effectiveSchedule,
+    duplicate_schedule_ids: directSchedules.slice(1).map(schedule => schedule.id),
+  };
+}
+
+function normalizeQuietHoursPayload(body = {}) {
+  const enabled = Boolean(body.enabled);
+  const startTime = normalizeQuietTime(body.start_time ?? '22:00', 'quiet-hours start time');
+  const endTime = normalizeQuietTime(body.end_time ?? '06:00', 'quiet-hours end time');
+  const daysOfWeek = normalizeQuietDays(body.days_of_week ?? DEFAULT_QUIET_DAYS);
+
+  if (enabled && (!startTime || !endTime)) {
+    throw new Error('Set both quiet-hours start and end time');
+  }
+
+  return {
+    enabled,
+    start_time: startTime || '22:00',
+    end_time: endTime || '06:00',
+    days_of_week: daysOfWeek,
+  };
 }
 
 router.get('/', authenticateToken, (req, res) => {
@@ -172,6 +297,103 @@ router.post('/update-player', authenticateToken, requireManagementAccess, (req, 
     queued,
     skipped,
   });
+});
+
+router.get('/:id/quiet-hours', authenticateToken, (req, res) => {
+  if (!userCanAccessDevice(req.user, req.params.id)) {
+    return res.status(404).json({ error: 'Device not found' });
+  }
+
+  const quietHours = getQuietHoursState(req.params.id);
+  if (!quietHours) return res.status(404).json({ error: 'Device not found' });
+
+  res.json({ quiet_hours: quietHours });
+});
+
+router.put('/:id/quiet-hours', authenticateToken, requireManagementAccess, (req, res) => {
+  if (!userCanAccessDevice(req.user, req.params.id)) {
+    return res.status(404).json({ error: 'Device not found' });
+  }
+
+  const device = db.prepare('SELECT id, name FROM devices WHERE id = ?').get(req.params.id);
+  if (!device) return res.status(404).json({ error: 'Device not found' });
+
+  const tvOffPlaylist = getTvOffPlaylist();
+  if (!tvOffPlaylist) {
+    return res.status(500).json({ error: 'TV_OFF system playlist is missing. Restart the server to seed system playlists.' });
+  }
+
+  let payload;
+  try {
+    payload = normalizeQuietHoursPayload(req.body);
+  } catch (err) {
+    return res.status(400).json({ error: err.message });
+  }
+
+  const directSchedules = getDirectQuietSchedules(req.params.id);
+  const canonical = directSchedules[0];
+  const duplicateIds = directSchedules.slice(1).map(schedule => schedule.id);
+  const impactedSchedules = [...directSchedules];
+
+  if (!canonical && !payload.enabled) {
+    return res.json({ success: true, quiet_hours: getQuietHoursState(req.params.id) });
+  }
+
+  if (canonical) {
+    db.prepare(`
+      UPDATE schedules
+      SET name = ?, playlist_id = ?, group_id = NULL, device_id = ?, priority = 100,
+          start_date = NULL, end_date = NULL, start_time = ?, end_time = ?,
+          days_of_week = ?, is_active = ?
+      WHERE id = ?
+    `).run(
+      `TV Off - ${device.name}`,
+      tvOffPlaylist.id,
+      req.params.id,
+      payload.start_time,
+      payload.end_time,
+      payload.days_of_week,
+      payload.enabled ? 1 : 0,
+      canonical.id,
+    );
+  } else {
+    const result = db.prepare(`
+      INSERT INTO schedules (name, playlist_id, group_id, device_id, priority,
+        start_date, end_date, start_time, end_time, days_of_week, is_active)
+      VALUES (?, ?, NULL, ?, 100, NULL, NULL, ?, ?, ?, ?)
+    `).run(
+      `TV Off - ${device.name}`,
+      tvOffPlaylist.id,
+      req.params.id,
+      payload.start_time,
+      payload.end_time,
+      payload.days_of_week,
+      payload.enabled ? 1 : 0,
+    );
+    impactedSchedules.push({ id: result.lastInsertRowid, device_id: req.params.id });
+  }
+
+  if (duplicateIds.length > 0) {
+    db.prepare(`DELETE FROM schedules WHERE id IN (${duplicateIds.map(() => '?').join(',')})`).run(...duplicateIds);
+  }
+
+  const quietHours = getQuietHoursState(req.params.id);
+  refreshDevicesForSchedules(req.app.get('io'), impactedSchedules, 'quiet_hours_updated');
+  logActivity(db, {
+    userId: req.user.id,
+    deviceId: req.params.id,
+    action: 'device_quiet_hours_updated',
+    details: {
+      enabled: payload.enabled,
+      start_time: payload.start_time,
+      end_time: payload.end_time,
+      days_of_week: payload.days_of_week,
+      schedule_id: quietHours.schedule?.id,
+      removed_duplicate_schedule_ids: duplicateIds,
+    },
+  });
+
+  res.json({ success: true, quiet_hours: quietHours });
 });
 
 router.get('/:id', authenticateToken, (req, res) => {

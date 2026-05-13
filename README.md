@@ -308,7 +308,7 @@ Active: active (running)
 It should also show JSON for the player manifest:
 
 ```json
-{"version":"1.6.3","files":["player.py","config.py","setup_server.py","setup_tui.py","requirements.txt","setup_ui/index.html"]}
+{"version":"1.6.17","files":["player.py","config.py","setup_server.py","setup_tui.py","requirements.txt","setup_ui/index.html"]}
 ```
 
 The exact version changes over time. The important part is that it is JSON and includes `player.py`. If this returns HTML, the server is not serving the API route correctly.
@@ -387,15 +387,47 @@ Build the image from the project:
 ./tools/build-image.sh
 ```
 
-Flash the generated `dist/signit-v1.img` image to an SD card with Raspberry Pi Imager.
+Flash the generated `dist/signit-v1.img.gz` image to an SD card with Raspberry Pi Imager.
 
 Important note: Raspberry Pi Imager does not show the normal WiFi/user customization wizard when flashing a custom image. That is expected.
 
 For WiFi, use one of these:
 
 - Plug Ethernet in for first boot.
-- Add the WiFi config file to the boot partition if your image build supports it.
-- Use the on-screen WiFi flow on the Pi.
+- Add `signit-wifi.txt` to the boot partition before first boot.
+- Use the on-screen setup UI with only a keyboard.
+
+Boot partition WiFi preconfiguration:
+
+```text
+COUNTRY=US
+SSID=YourNetworkName
+PASSWORD=YourWiFiPassword
+SECURITY=auto
+```
+
+Supported `SECURITY` values:
+
+- `auto`: try the best normal path first, then fallback.
+- `wpa-psk`: WPA/WPA2 personal.
+- `sae`: WPA3/SAE personal.
+- `wep`: legacy WEP only if absolutely required.
+- `open`: no password.
+
+Copy `signit-wifi.txt.example` to `signit-wifi.txt` on the boot partition after flashing, then edit the values. This is the easiest way to prepare a Pi at home for a client network without needing a mouse/keyboard at the client site.
+
+Keyboard-only setup UI controls:
+
+- `Tab` / `Shift+Tab`: move between controls.
+- Arrow keys: move through network lists and buttons.
+- `Enter`: select or submit.
+- `Escape`: close dialogs.
+- `F2`: server settings.
+- `F5`: refresh/rescan.
+- `F6`: WiFi setup.
+- `M`: manual WiFi entry.
+
+If the player is already showing content, WiFi can still be changed by placing a new `signit-wifi.txt` on the boot partition and rebooting, or by SSH/nmcli. The setup UI hotkeys are available while the setup screen is active.
 
 ### Option B - Install On Existing Raspberry Pi OS
 
@@ -435,7 +467,7 @@ How it works:
 - Admins and editors can update all outdated Pis from the Displays page.
 - Online Pis receive the update command immediately.
 - Offline Pis are queued and receive the update the next time they reconnect.
-- Player version `1.6.3` and newer includes Camera Wall mode for tiled RTSP/RTSPS camera playback, hardened stream window tiling, hardened single-stream playback, and OTA update progress. The player tries `ffplay` with TCP first, then falls back to `mpv`, writes stream diagnostics to `/opt/signit/logs/stream-player.log`, and reports update percent/ETA back to the dashboard.
+- Player version `1.6.17` and newer includes Camera Wall mode for tiled RTSP/RTSPS camera playback, hardened stream window tiling, hardened single-stream playback, OTA update progress, power/network heartbeat diagnostics, safer Chromium launch behavior, and improved keyboard/manual WiFi setup. The player tries `ffplay` with TCP first, then falls back to `mpv`, writes stream diagnostics to `/opt/signit/logs/stream-player.log`, and reports update percent/ETA back to the dashboard.
 
 Important bootstrap note:
 
@@ -474,6 +506,15 @@ Dashboard -> Devices -> Assigned Playlist -> TV_OFF
 ```
 
 When `TV_OFF` becomes active, the Pi switches the connected display off using the best available Raspberry Pi/X11 method. When a normal playlist becomes active again, the Pi powers the display back on before showing content.
+
+Quiet Hours on the Device page are a friendly wrapper around the `TV_OFF` system playlist. The canonical state lives on the server through:
+
+```text
+GET /api/devices/:id/quiet-hours
+PUT /api/devices/:id/quiet-hours
+```
+
+The Pi does not store an independent quiet-hours schedule. It polls the server and applies whatever playlist is active for that device. If quiet hours look wrong in the dashboard, check the device quiet-hours endpoint and the schedules table before assuming the Pi has local schedule drift.
 
 Display rotation supports:
 
@@ -514,6 +555,9 @@ What to look for:
 - `throttled=0x0` means the current boot has not recorded undervoltage or thermal throttling. A complete PoE power loss can still leave no Pi-side evidence.
 - `signit-display` restarts without a full system boot usually points at player/browser failure.
 - A new boot with no graceful shutdown usually points at PoE, switch power, cable, OS crash, or hard lock.
+- Newer players report `power_throttled` and `network_interface` back to the dashboard heartbeat. Non-zero `power_throttled` values are a strong clue for PoE/undervoltage/thermal instability.
+- A black screen with the Pi still reachable usually points at player, Chromium, display rotation, playlist asset, or X11 state.
+- A Pi that cannot be pinged or SSHed into is below the SignIT app layer: power, Ethernet/WiFi, DHCP, kernel hang, filesystem/SD card, or hardware.
 
 To enable the same diagnostic protection manually on an older Pi:
 

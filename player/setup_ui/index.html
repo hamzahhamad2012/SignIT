@@ -136,16 +136,18 @@
       <div class="logo">SignIT</div>
       <div class="hints">
         <span><kbd>F6</kbd> Wi-Fi</span>
+        <span><kbd>M</kbd> Manual Wi-Fi</span>
         <span><kbd>F2</kbd> Server Settings</span>
         <span><kbd>F5</kbd> Refresh</span>
         <span><kbd>Tab</kbd>/<kbd>↑↓</kbd> Navigate</span>
+        <span><kbd>Enter</kbd> Select</span>
       </div>
     </div>
     <div class="main" id="main"></div>
     <div class="status-bar">
       <div class="net"><div class="dot" id="netDot"></div><span id="netLabel">Checking...</span></div>
       <div><span id="ipLabel"></span> · <span id="hostLabel"></span></div>
-      <div>SignIT Player v1.0</div>
+      <div>SignIT Player v1.6.17</div>
     </div>
   </div>
 
@@ -153,10 +155,11 @@
     <div class="card">
       <div class="icon-wrap" style="background:rgba(139,92,246,0.12)">📶</div>
       <h1>Wi-Fi Settings</h1>
-      <p class="sub">Select a network to connect</p>
+      <p class="sub">Select a network to connect. Use arrow keys and Enter, or press M for manual SSID.</p>
       <div id="wifiOvContent"></div>
       <div style="display:flex;gap:8px;margin-top:16px">
         <button class="btn btn-ghost" onclick="closeWifi()">Close <small>(Esc)</small></button>
+        <button class="btn btn-ghost" onclick="manualWifi('ov')">Manual <small>(M)</small></button>
         <button class="btn btn-ghost" onclick="scanWifi('ov')">Rescan</button>
       </div>
     </div>
@@ -199,7 +202,11 @@
     }
     function renderWifi(c, nets, t) {
       if (!c) return;
-      if (!nets.length) { c.innerHTML = '<div class="msg info">No networks found. Try again.</div>'; return; }
+      if (!nets.length) {
+        c.innerHTML = `<div class="msg info">No networks found. Try again or enter the SSID manually.</div><button class="btn btn-primary" onclick="manualWifi('${t}')">Manual Network <small>(M)</small></button>`;
+        setTimeout(() => c.querySelector('button')?.focus(), 50);
+        return;
+      }
       const currentIndex = Math.max(0, nets.findIndex(n => n.ssid === state.ssid));
       wifiUi = { nets, target: t, index: currentIndex >= 0 ? currentIndex : 0 };
       c.innerHTML = '<div class="wifi-list">' + nets.map((n,i) => {
@@ -207,7 +214,7 @@
         const bars = [1,2,3,4].map(b=>`<div class="b ${b<=s?'a':''}"></div>`).join('');
         const cur = n.ssid === state.ssid;
         return `<button type="button" class="wifi-item ${cur?'sel':''}" data-wifi-target="${t}" onclick="pickWifi(${i},'${t}')" onfocus="setWifiFocus(${i},'${t}')" onkeydown="wifiItemKey(event,${i},'${t}')" tabindex="${i === wifiUi.index ? 0 : -1}"><div><div class="name">${escapeHtml(n.ssid)}${cur?' <small style="color:var(--green)">(current)</small>':''}</div></div><div class="meta">${n.security?'🔒':''}${n.security_label ? `<span>${escapeHtml(n.security_label)}</span>` : ''}<div class="bars">${bars}</div></div></button>`;
-      }).join('') + '</div>';
+      }).join('') + `</div><button class="btn btn-ghost" onclick="manualWifi('${t}')">Manual Network <small>(M)</small></button>`;
       setTimeout(() => focusWifiIndex(wifiUi.index, true), 0);
     }
     function focusWifiIndex(index, shouldFocus = true) {
@@ -246,6 +253,37 @@
       const pw = document.getElementById('wfp')?.value || '';
       await doConnect(pendingWifi.ssid, pw, c, pendingWifi.security || '');
     }
+    function manualWifi(t = wifiUi.target || 'step') {
+      wifiUi.target = t;
+      const c = t === 'ov' ? document.getElementById('wifiOvContent') : document.getElementById('wifiStepContent');
+      if (!c) return;
+      pendingWifi = { ssid: '', security: 'WPA/WPA2', target: t };
+      c.innerHTML = `<div class="msg info">Manual Wi-Fi works for hidden networks and pre-known client networks.</div>
+        <div class="field"><label>Network Name / SSID</label><input id="wfs" autocomplete="off" placeholder="ClientWiFi" onkeydown="if(event.key==='Enter')document.getElementById('wfp')?.focus()"></div>
+        <div class="field"><label>Password</label><input type="password" id="wfp" placeholder="Wi-Fi password" onkeydown="if(event.key==='Enter')connectManualWifi()"></div>
+        <div class="field"><label>Security</label><select id="wsec" style="width:100%;padding:13px 14px;background:var(--bg);border:1px solid var(--border);border-radius:10px;color:var(--text);font-size:15px">
+          <option value="WPA/WPA2">WPA/WPA2 Personal</option>
+          <option value="WPA3/SAE">WPA3 / SAE</option>
+          <option value="open">Open / no password</option>
+          <option value="WEP">WEP legacy</option>
+        </select></div>
+        <div style="display:flex;gap:8px;margin-top:12px"><button class="btn btn-ghost" onclick="scanWifi(pendingWifi.target)">Back to Scan</button><button class="btn btn-primary" onclick="connectManualWifi()">Connect</button></div>`;
+      setTimeout(() => document.getElementById('wfs')?.focus(), 50);
+    }
+    async function connectManualWifi() {
+      const target = pendingWifi?.target || 'step';
+      const c = target === 'ov' ? document.getElementById('wifiOvContent') : document.getElementById('wifiStepContent');
+      const ssid = document.getElementById('wfs')?.value.trim() || '';
+      const pw = document.getElementById('wfp')?.value || '';
+      const sec = document.getElementById('wsec')?.value || 'WPA/WPA2';
+      if (!ssid) {
+        c.innerHTML = `<div class="msg err">SSID required</div><button class="btn btn-primary" onclick="manualWifi('${target}')">Try Again</button>`;
+        setTimeout(() => c.querySelector('button')?.focus(), 50);
+        return;
+      }
+      pendingWifi = { ssid, security: sec, target };
+      await doConnect(ssid, sec === 'open' ? '' : pw, c, sec);
+    }
     async function doConnect(ssid, pw, c, security='') {
       c.innerHTML = '<div class="loading-text"><div class="spinner"></div>Connecting to '+escapeHtml(ssid)+'...</div>';
       try {
@@ -271,7 +309,7 @@
 
     function renderWifiStep(m) {
       m.innerHTML = `<div class="card"><div class="icon-wrap" style="background:rgba(139,92,246,0.12)">📶</div><h1>Connect to Wi-Fi</h1><p class="sub">Your display needs internet to reach the SignIT server.</p>
-        ${state.net==='on' ? `<div class="msg ok">Connected to <strong>${state.ssid}</strong></div><div id="wifiStepContent"></div><div style="display:flex;gap:8px;margin-top:14px"><button class="btn btn-ghost" onclick="scanWifi('step')">Change Network</button><button class="btn btn-primary" onclick="showStep('server')">Continue →</button></div>` : `<div id="wifiStepContent"></div><button class="btn btn-ghost" style="margin-top:10px" onclick="scanWifi('step')">Scan Again</button><div style="text-align:center;margin-top:14px"><button class="btn btn-ghost" style="width:auto;padding:8px 16px;font-size:12px" onclick="showStep('server')">Skip (Ethernet) →</button></div>`}
+        ${state.net==='on' ? `<div class="msg ok">Connected to <strong>${state.ssid || 'network'}</strong></div><div id="wifiStepContent"></div><div style="display:flex;gap:8px;margin-top:14px"><button class="btn btn-ghost" onclick="scanWifi('step')">Change Network</button><button class="btn btn-ghost" onclick="manualWifi('step')">Manual</button><button class="btn btn-primary" onclick="showStep('server')">Continue →</button></div>` : `<div id="wifiStepContent"></div><div style="display:flex;gap:8px;margin-top:10px"><button class="btn btn-ghost" onclick="scanWifi('step')">Scan Again</button><button class="btn btn-ghost" onclick="manualWifi('step')">Manual</button></div><div style="text-align:center;margin-top:14px"><button class="btn btn-ghost" style="width:auto;padding:8px 16px;font-size:12px" onclick="showStep('server')">Skip (Ethernet) →</button></div>`}
       </div>`;
       if (state.net !== 'on') scanWifi('step');
     }
@@ -346,6 +384,12 @@
     // ── Keyboard ──
     document.addEventListener('keydown', e => {
       if (e.key === 'F6') { e.preventDefault(); const ov = document.getElementById('wifiOverlay'); if (ov.classList.contains('hidden')) openWifi(); else closeWifi(); }
+      if (e.key.toLowerCase() === 'm' && !['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement?.tagName || '')) {
+        e.preventDefault();
+        const ov = document.getElementById('wifiOverlay');
+        if (ov.classList.contains('hidden') && currentStep !== 'wifi') openWifi();
+        manualWifi(ov.classList.contains('hidden') ? 'step' : 'ov');
+      }
       if (e.key === 'F5') {
         e.preventDefault();
         const ov = document.getElementById('wifiOverlay');

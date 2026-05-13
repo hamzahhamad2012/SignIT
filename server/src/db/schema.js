@@ -50,6 +50,8 @@ export const schema = `
     memory_usage REAL,
     disk_usage REAL,
     uptime INTEGER,
+    power_throttled TEXT,
+    network_interface TEXT,
     screenshot TEXT,
     settings TEXT DEFAULT '{}',
     tags TEXT DEFAULT '[]',

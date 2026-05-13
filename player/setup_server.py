@@ -19,7 +19,7 @@ from pathlib import Path
 CONFIG_FILE = '/opt/signit/config.json'
 SETUP_UI_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'setup_ui')
 SETUP_PORT = 8888
-PLAYER_VERSION = '1.6.16'
+PLAYER_VERSION = '1.6.17'
 
 
 def parse_nmcli_line(line):
@@ -231,9 +231,9 @@ def connect_wifi(ssid, password, security=''):
             if 'WEP' in sec:
                 fallback_modes.append('wep')
             else:
-                fallback_modes.append('wpa-psk')
                 if 'WPA3' in sec or 'SAE' in sec:
                     fallback_modes.append('sae')
+                fallback_modes.append('wpa-psk')
                 fallback_modes.append('wep')
 
             for mode in fallback_modes:

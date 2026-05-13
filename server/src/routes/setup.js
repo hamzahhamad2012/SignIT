@@ -939,6 +939,13 @@ const SIGNIT_WIFI_TEMPLATE = `# SignIT — place this as signit-wifi.txt on the 
 
 SSID=YourNetworkName
 PASSWORD=YourWiFiPassword
+
+# Optional but recommended.
+COUNTRY=US
+
+# Optional: auto, wpa-psk, sae, wep, open.
+# Use sae for WPA3-only networks. Leave auto for most WPA/WPA2 networks.
+SECURITY=auto
 `;
 
 router.get('/signit-wifi-template.txt', (req, res) => {

@@ -32,10 +32,6 @@ function normalizeDays(daysOfWeek) {
     .join(',');
 }
 
-function isTvOffPlaylist(playlist) {
-  return playlist?.system_action === 'display_off' || playlist?.name === 'TV_OFF';
-}
-
 function activePlayerUpdateStatus(status) {
   return status && !['success', 'current'].includes(status);
 }
@@ -95,7 +91,7 @@ export default function DeviceDetail() {
   const [editingLocation, setEditingLocation] = useState(false);
   const [locationForm, setLocationForm] = useState({});
   const [screenshotSize, setScreenshotSize] = useState({ width: 0, height: 0 });
-  const [schedules, setSchedules] = useState([]);
+  const [quietState, setQuietState] = useState(null);
   const [quietForm, setQuietForm] = useState({
     enabled: false,
     start_time: '22:00',
@@ -121,10 +117,12 @@ export default function DeviceDetail() {
         location_notes: d.device.location_notes || '',
       });
     }).catch(() => navigate('/devices'));
+    api.get(`/devices/${id}/quiet-hours`)
+      .then(d => setQuietState(d.quiet_hours))
+      .catch(() => setQuietState(null));
     if (canManage) {
       api.get('/playlists').then(d => setPlaylists(d.playlists));
       api.get('/groups').then(d => setGroups(d.groups));
-      api.get('/schedules').then(d => setSchedules(d.schedules));
     }
   }, [id, canManage, navigate]);
 
@@ -188,13 +186,10 @@ export default function DeviceDetail() {
     return () => unsubs.forEach(fn => fn());
   }, [id, on]);
 
-  const tvOffPlaylist = useMemo(() => playlists.find(isTvOffPlaylist), [playlists]);
-  const quietSchedule = useMemo(() => (
-    schedules.find((schedule) => (
-      String(schedule.device_id || '') === String(id) &&
-      schedule.system_action === 'display_off'
-    ))
-  ), [id, schedules]);
+  const quietSchedule = quietState?.schedule || quietState?.effective_schedule || null;
+  const directQuietSchedule = quietState?.schedule || null;
+  const inheritedQuietSchedule = quietState?.inherited_schedule || null;
+  const quietSource = quietState?.source || 'none';
 
   useEffect(() => {
     if (!quietSchedule) {
@@ -275,6 +270,7 @@ export default function DeviceDetail() {
     await api.put(`/devices/${id}`, { group_id: groupId || null });
     const updated = await api.get(`/devices/${id}`);
     setDevice(updated.device);
+    await refreshQuietHours().catch(() => {});
     toast.success('Group updated');
   };
 
@@ -292,9 +288,9 @@ export default function DeviceDetail() {
     toast.success(`Rotation set to ${displayRotation}. The Pi will also pick this up on its next poll.`);
   };
 
-  const refreshSchedules = async () => {
-    const updated = await api.get('/schedules');
-    setSchedules(updated.schedules);
+  const refreshQuietHours = async () => {
+    const updated = await api.get(`/devices/${id}/quiet-hours`);
+    setQuietState(updated.quiet_hours);
   };
 
   const toggleQuietDay = (day) => {
@@ -309,8 +305,10 @@ export default function DeviceDetail() {
   };
 
   const handleSaveQuietHours = async () => {
-    if (!tvOffPlaylist) return toast.error('TV_OFF system playlist is missing. Restart the server once to seed it.');
-    if (!quietForm.enabled && !quietSchedule) return toast.success('Quiet hours are already off');
+    if (!quietForm.enabled && !directQuietSchedule && quietSource === 'group') {
+      return toast.error('This player inherits quiet hours from its group. Edit the group schedule to disable it.');
+    }
+    if (!quietForm.enabled && !directQuietSchedule) return toast.success('Quiet hours are already off');
     if (quietForm.enabled && (!quietForm.start_time || !quietForm.end_time)) {
       return toast.error('Set both quiet-hours start and end time');
     }
@@ -319,24 +317,15 @@ export default function DeviceDetail() {
     }
 
     const payload = {
-      name: `TV Off - ${device.name}`,
-      playlist_id: tvOffPlaylist.id,
-      device_id: id,
-      group_id: null,
-      priority: 100,
+      enabled: quietForm.enabled,
       start_time: quietForm.start_time,
       end_time: quietForm.end_time,
       days_of_week: normalizeDays(quietForm.days_of_week),
-      is_active: quietForm.enabled,
     };
 
     try {
-      if (quietSchedule) {
-        await api.put(`/schedules/${quietSchedule.id}`, payload);
-      } else {
-        await api.post('/schedules', payload);
-      }
-      await refreshSchedules();
+      const result = await api.put(`/devices/${id}/quiet-hours`, payload);
+      setQuietState(result.quiet_hours);
       toast.success(quietForm.enabled ? 'Quiet hours saved' : 'Quiet hours paused');
     } catch (err) {
       toast.error(err.message);
@@ -394,6 +383,8 @@ export default function DeviceDetail() {
     ['OS', device.os_info || '—'],
     ['Player Version', device.player_version || '—'],
     ['Latest Player', device.latest_player_version || '—'],
+    ['Network', device.network_interface || '—'],
+    ['Power Flags', device.power_throttled || '0x0'],
     ['Registered', new Date(device.registered_at).toLocaleDateString()],
     ['Last Seen', device.last_seen ? new Date(device.last_seen).toLocaleString() : 'Never'],
   ];
@@ -830,13 +821,14 @@ export default function DeviceDetail() {
                     );
                   })}
                 </div>
-                {!tvOffPlaylist && (
-                  <p className="text-xs text-red-300">TV_OFF is not seeded yet. Restart the server once, then refresh this page.</p>
+                {quietSource === 'group' && inheritedQuietSchedule && (
+                  <p className="text-xs text-amber-300">
+                    Inherited from group schedule "{inheritedQuietSchedule.name}". Edit the group schedule to disable inherited quiet hours.
+                  </p>
                 )}
                 <button
                   onClick={handleSaveQuietHours}
-                  disabled={!tvOffPlaylist}
-                  className="btn-primary w-full text-xs disabled:opacity-50"
+                  className="btn-primary w-full text-xs"
                 >
                   <Save size={12} /> Save Quiet Hours
                 </button>

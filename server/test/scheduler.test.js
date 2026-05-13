@@ -339,7 +339,7 @@ test('core API smoke test covers auth, content, devices, schedules, and player r
 
   const playerManifest = await request('/api/setup/player-manifest');
   assert.equal(playerManifest.ok, true);
-  assert.equal(playerManifest.data.version, '1.6.16');
+  assert.equal(playerManifest.data.version, '1.6.17');
   assert.ok(playerManifest.data.files.includes('player.py'));
 
   const login = await request('/api/auth/login', {
@@ -618,7 +618,7 @@ test('core API smoke test covers auth, content, devices, schedules, and player r
     headers: { Authorization: authHeaders.Authorization },
   });
   assert.equal(deviceDetail.ok, true);
-  assert.equal(deviceDetail.data.device.latest_player_version, '1.6.16');
+  assert.equal(deviceDetail.data.device.latest_player_version, '1.6.17');
   assert.equal(deviceDetail.data.device.needs_player_update, true);
 
   const updatePlayers = await request('/api/devices/update-player', {
@@ -627,7 +627,7 @@ test('core API smoke test covers auth, content, devices, schedules, and player r
     body: JSON.stringify({ device_ids: [deviceId] }),
   });
   assert.equal(updatePlayers.ok, true);
-  assert.equal(updatePlayers.data.latest_player_version, '1.6.16');
+  assert.equal(updatePlayers.data.latest_player_version, '1.6.17');
   assert.equal(updatePlayers.data.sent.length, 0);
   assert.equal(updatePlayers.data.queued.length, 1);
   assert.equal(updatePlayers.data.queued[0].id, deviceId);
@@ -639,13 +639,53 @@ test('core API smoke test covers auth, content, devices, schedules, and player r
   assert.equal(playerConfig.data.orientation, 'portrait');
   assert.equal(playerConfig.data.display_rotation, 'portrait-left');
 
+  const todayIndex = chicagoDayIndex();
+  const quietInitial = await request(`/api/devices/${deviceId}/quiet-hours`, {
+    headers: { Authorization: authHeaders.Authorization },
+  });
+  assert.equal(quietInitial.ok, true);
+  assert.equal(quietInitial.data.quiet_hours.source, 'none');
+  assert.equal(quietInitial.data.quiet_hours.schedule, null);
+
+  const quietSave = await request(`/api/devices/${deviceId}/quiet-hours`, {
+    method: 'PUT',
+    headers: authHeaders,
+    body: JSON.stringify({
+      enabled: true,
+      start_time: '22:00',
+      end_time: '06:00',
+      days_of_week: String((todayIndex + 1) % 7),
+    }),
+  });
+  assert.equal(quietSave.ok, true, `Quiet-hours save failed: ${JSON.stringify(quietSave.data)}`);
+  assert.equal(quietSave.data.quiet_hours.source, 'device');
+  assert.equal(quietSave.data.quiet_hours.schedule.is_active, true);
+  assert.equal(quietSave.data.quiet_hours.schedule.start_time, '22:00');
+  assert.equal(quietSave.data.quiet_hours.schedule.end_time, '06:00');
+
+  const quietPause = await request(`/api/devices/${deviceId}/quiet-hours`, {
+    method: 'PUT',
+    headers: authHeaders,
+    body: JSON.stringify({
+      enabled: false,
+      start_time: '23:00',
+      end_time: '07:00',
+      days_of_week: String((todayIndex + 1) % 7),
+    }),
+  });
+  assert.equal(quietPause.ok, true);
+  assert.equal(quietPause.data.quiet_hours.source, 'device');
+  assert.equal(quietPause.data.quiet_hours.schedule.is_active, false);
+  assert.equal(quietPause.data.quiet_hours.effective_schedule, null);
+  assert.equal(quietPause.data.quiet_hours.schedule.start_time, '23:00');
+  assert.equal(quietPause.data.quiet_hours.schedule.end_time, '07:00');
+
   const playerFallback = await request('/api/player/playlist', {
     headers: { 'X-Device-Id': deviceId },
   });
   assert.equal(playerFallback.ok, true);
   assert.equal(playerFallback.data.playlist.name, 'Fallback Playlist');
 
-  const todayIndex = chicagoDayIndex();
   const schedule = await request('/api/schedules', {
     method: 'POST',
     headers: authHeaders,

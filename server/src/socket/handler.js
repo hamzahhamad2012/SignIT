@@ -26,12 +26,37 @@ export function setupSocketHandlers(io) {
       sendQueuedPlayerUpdate(io, db, deviceId);
 
       socket.on('heartbeat', (data) => {
-        const { cpu_temp, cpu_usage, memory_usage, disk_usage, uptime } = data;
+        const {
+          cpu_temp,
+          cpu_usage,
+          memory_usage,
+          disk_usage,
+          uptime,
+          ip_address,
+          player_version,
+          power_throttled,
+          network_interface,
+        } = data;
         db.prepare(`
           UPDATE devices SET status = 'online', last_seen = CURRENT_TIMESTAMP,
-            cpu_temp = ?, cpu_usage = ?, memory_usage = ?, disk_usage = ?, uptime = ?
+            cpu_temp = ?, cpu_usage = ?, memory_usage = ?, disk_usage = ?, uptime = ?,
+            ip_address = COALESCE(?, ip_address),
+            player_version = COALESCE(?, player_version),
+            power_throttled = COALESCE(?, power_throttled),
+            network_interface = COALESCE(?, network_interface)
           WHERE id = ?
-        `).run(cpu_temp, cpu_usage, memory_usage, disk_usage, uptime, deviceId);
+        `).run(
+          cpu_temp,
+          cpu_usage,
+          memory_usage,
+          disk_usage,
+          uptime,
+          ip_address,
+          player_version,
+          power_throttled,
+          network_interface,
+          deviceId,
+        );
 
         io.emit('device:heartbeat', { deviceId, ...data, status: 'online', last_seen: new Date().toISOString() });
       });

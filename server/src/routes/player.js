@@ -39,7 +39,17 @@ router.post('/heartbeat', (req, res) => {
   const deviceId = req.headers['x-device-id'];
   if (!deviceId) return res.status(400).json({ error: 'Device ID required' });
 
-  const { cpu_temp, cpu_usage, memory_usage, disk_usage, uptime, ip_address, player_version } = req.body;
+  const {
+    cpu_temp,
+    cpu_usage,
+    memory_usage,
+    disk_usage,
+    uptime,
+    ip_address,
+    player_version,
+    power_throttled,
+    network_interface,
+  } = req.body;
 
   const device = db.prepare('SELECT * FROM devices WHERE id = ?').get(deviceId);
   if (!device) return res.status(404).json({ error: 'Device not registered' });
@@ -51,9 +61,22 @@ router.post('/heartbeat', (req, res) => {
       last_seen = CURRENT_TIMESTAMP, status = 'online',
       cpu_temp = ?, cpu_usage = ?, memory_usage = ?, disk_usage = ?,
       uptime = ?, ip_address = COALESCE(?, ip_address),
-      player_version = COALESCE(?, player_version)
+      player_version = COALESCE(?, player_version),
+      power_throttled = COALESCE(?, power_throttled),
+      network_interface = COALESCE(?, network_interface)
     WHERE id = ?
-  `).run(cpu_temp, cpu_usage, memory_usage, disk_usage, uptime, ip_address, player_version, deviceId);
+  `).run(
+    cpu_temp,
+    cpu_usage,
+    memory_usage,
+    disk_usage,
+    uptime,
+    ip_address,
+    player_version,
+    power_throttled,
+    network_interface,
+    deviceId,
+  );
 
   // If device was showing offline, broadcast that it's back online
   if (wasOffline) {

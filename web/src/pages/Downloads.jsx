@@ -121,7 +121,9 @@ export default function Downloads() {
           </ol>
           <div className="bg-[#0a0a0a] rounded-lg p-3 font-mono text-xs text-cyan-300/90">
             SSID=YourNetworkName<br />
-            PASSWORD=YourWiFiPassword
+            PASSWORD=YourWiFiPassword<br />
+            COUNTRY=US<br />
+            SECURITY=auto
           </div>
           <p className="text-xs text-zinc-500">
             Or copy <code className="text-zinc-400">signit-wifi.txt.example</code> from the same boot drive (already on the image) and rename to <code className="text-zinc-400">signit-wifi.txt</code> after editing.

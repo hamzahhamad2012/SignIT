@@ -75,6 +75,14 @@ function applyMigrations() {
     db.prepare("ALTER TABLE playlists ADD COLUMN playlist_type TEXT DEFAULT 'media'").run();
   }
 
+  if (!hasColumn('devices', 'power_throttled')) {
+    db.prepare('ALTER TABLE devices ADD COLUMN power_throttled TEXT').run();
+  }
+
+  if (!hasColumn('devices', 'network_interface')) {
+    db.prepare('ALTER TABLE devices ADD COLUMN network_interface TEXT').run();
+  }
+
   db.prepare(`
     CREATE TABLE IF NOT EXISTS player_update_jobs (
       device_id TEXT PRIMARY KEY REFERENCES devices(id) ON DELETE CASCADE,

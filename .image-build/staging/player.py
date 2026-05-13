@@ -85,6 +85,7 @@ class SignITPlayer:
         self.display_power_state = 'on'
         self.black_screen_hits = 0
         self.last_black_screen_recovery = 0
+        self.last_power_warning = 0
         self.force_software_chromium_until = 0
         self.last_fullscreen_enforce = 0
         self.chromium_launch_lock = threading.Lock()
@@ -2147,11 +2148,33 @@ class SignITPlayer:
             pass
 
         try:
+            throttled = subprocess.run(['vcgencmd', 'get_throttled'], capture_output=True, text=True, timeout=3)
+            if throttled.returncode == 0:
+                value = throttled.stdout.strip().split('=', 1)[-1] or 'unknown'
+                metrics['power_throttled'] = value
+                if value not in ('0x0', '0') and time.time() - self.last_power_warning > 300:
+                    log.warning(f'Pi power/throttle warning from vcgencmd: get_throttled={value}')
+                    self.last_power_warning = time.time()
+        except Exception:
+            pass
+
+        try:
             import socket
             s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             s.connect(('8.8.8.8', 80))
             metrics['ip_address'] = s.getsockname()[0]
             s.close()
+        except Exception:
+            pass
+
+        try:
+            route = subprocess.run(['ip', 'route', 'get', '1.1.1.1'], capture_output=True, text=True, timeout=3)
+            if route.returncode == 0:
+                parts = route.stdout.strip().split()
+                if 'dev' in parts:
+                    metrics['network_interface'] = parts[parts.index('dev') + 1]
+                if 'src' in parts:
+                    metrics['ip_address'] = parts[parts.index('src') + 1]
         except Exception:
             pass
 

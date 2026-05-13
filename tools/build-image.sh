@@ -397,17 +397,21 @@ LOG_FILE=/opt/signit/logs/wifi-boot.log
 [ -f "$WIFI_FILE" ] || exit 0
 SSID=$(grep -E '^[[:space:]]*SSID=' "$WIFI_FILE" | head -1 | cut -d= -f2- | tr -d '\r\n')
 PASS=$(grep -E '^[[:space:]]*PASSWORD=' "$WIFI_FILE" | head -1 | cut -d= -f2- | tr -d '\r\n')
+COUNTRY=$(grep -E '^[[:space:]]*COUNTRY=' "$WIFI_FILE" | head -1 | cut -d= -f2- | tr -d '\r\n')
+SECURITY=$(grep -E '^[[:space:]]*SECURITY=' "$WIFI_FILE" | head -1 | cut -d= -f2- | tr -d '\r\n' | tr '[:lower:]' '[:upper:]')
 [ -z "$SSID" ] && exit 0
 mkdir -p /opt/signit/logs
 exec >> "$LOG_FILE" 2>&1
 echo
 echo "=== SignIT boot WiFi: $(date) ==="
 echo "SSID: $SSID"
+echo "Security hint: ${SECURITY:-auto}"
 CONN_NAME="signit-boot-$(printf '%s' "$SSID" | sha1sum | cut -c1-12)"
 rfkill unblock wifi 2>/dev/null || true
 nmcli radio wifi on 2>/dev/null || true
 ip link set wlan0 up 2>/dev/null || true
 nmcli dev set wlan0 managed yes 2>/dev/null || true
+[ -n "$COUNTRY" ] && raspi-config nonint do_wifi_country "$COUNTRY" 2>/dev/null || true
 sleep 2
 
 connect_direct() {
@@ -422,7 +426,9 @@ connect_profile() {
   MODE="$1"
   nmcli connection delete "$CONN_NAME" 2>/dev/null || true
   nmcli connection add type wifi ifname wlan0 con-name "$CONN_NAME" ssid "$SSID" || return 1
-  if [ "$MODE" = "wep" ]; then
+  if [ "$MODE" = "open" ]; then
+    nmcli connection modify "$CONN_NAME" connection.autoconnect yes ipv4.method auto ipv6.method auto || return 1
+  elif [ "$MODE" = "wep" ]; then
     nmcli connection modify "$CONN_NAME" connection.autoconnect yes ipv4.method auto ipv6.method auto wifi-sec.key-mgmt none wifi-sec.wep-key0 "$PASS" || return 1
   elif [ "$MODE" = "sae" ]; then
     nmcli connection modify "$CONN_NAME" connection.autoconnect yes ipv4.method auto ipv6.method auto wifi-sec.key-mgmt sae wifi-sec.psk "$PASS" || return 1
@@ -435,13 +441,24 @@ connect_profile() {
 SUCCESS=0
 connect_direct && SUCCESS=1 || true
 if [ "$SUCCESS" -ne 1 ] && [ -n "$PASS" ]; then
-  connect_profile wpa-psk && SUCCESS=1 || true
+  if echo "$SECURITY" | grep -Eq 'WPA3|SAE'; then
+    connect_profile sae && SUCCESS=1 || true
+  else
+    connect_profile wpa-psk && SUCCESS=1 || true
+  fi
 fi
 if [ "$SUCCESS" -ne 1 ] && [ -n "$PASS" ]; then
-  connect_profile sae && SUCCESS=1 || true
+  if echo "$SECURITY" | grep -Eq 'WPA3|SAE'; then
+    connect_profile wpa-psk && SUCCESS=1 || true
+  else
+    connect_profile sae && SUCCESS=1 || true
+  fi
 fi
 if [ "$SUCCESS" -ne 1 ] && [ -n "$PASS" ]; then
   connect_profile wep && SUCCESS=1 || true
+fi
+if [ "$SUCCESS" -ne 1 ] && [ -z "$PASS" ]; then
+  connect_profile open && SUCCESS=1 || true
 fi
 
 if [ "$SUCCESS" -eq 1 ]; then
@@ -510,8 +527,16 @@ echo "[6/7] Boot partition…"
 
 cat > /mnt/piboot/signit-wifi.txt.example << 'WEOF'
 # Copy as: signit-wifi.txt  (on boot partition after flashing)
+# Optional, but recommended for WiFi stability:
+COUNTRY=US
+
+# Network name and password:
 SSID=YourNetworkName
 PASSWORD=YourWiFiPassword
+
+# Optional security hint: auto, wpa-psk, sae, wep, open
+# Use sae for WPA3-only networks. Leave as auto for most WPA/WPA2 networks.
+SECURITY=auto
 WEOF
 
 cat > /mnt/piboot/SIGNIT_README.txt << 'RDME'
@@ -523,7 +548,7 @@ Boot 1: Pi OS expands filesystem (~30s, auto-reboot)
 Boot 2: SignIT setup screen appears on your TV/monitor
 
 WiFi: Plug Ethernet OR copy signit-wifi.txt.example to signit-wifi.txt
-      and fill in your SSID + PASSWORD before first boot.
+      and fill in COUNTRY, SSID, PASSWORD, and optional SECURITY before first boot.
       You can also press F6 on the setup screen.
       Image default WiFi country: US
 
