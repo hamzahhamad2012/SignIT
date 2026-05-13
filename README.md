@@ -308,7 +308,7 @@ Active: active (running)
 It should also show JSON for the player manifest:
 
 ```json
-{"version":"1.6.17","files":["player.py","config.py","setup_server.py","setup_tui.py","requirements.txt","setup_ui/index.html"]}
+{"version":"1.6.19","files":["player.py","config.py","setup_server.py","setup_tui.py","requirements.txt","setup_ui/index.html"]}
 ```
 
 The exact version changes over time. The important part is that it is JSON and includes `player.py`. If this returns HTML, the server is not serving the API route correctly.
@@ -396,6 +396,7 @@ For WiFi, use one of these:
 - Plug Ethernet in for first boot.
 - Add `signit-wifi.txt` to the boot partition before first boot.
 - Use the on-screen setup UI with only a keyboard.
+- Press `F6` while the player is already showing content to open the in-player WiFi panel.
 
 Boot partition WiFi preconfiguration:
 
@@ -427,7 +428,13 @@ Keyboard-only setup UI controls:
 - `F6`: WiFi setup.
 - `M`: manual WiFi entry.
 
-If the player is already showing content, WiFi can still be changed by placing a new `signit-wifi.txt` on the boot partition and rebooting, or by SSH/nmcli. The setup UI hotkeys are available while the setup screen is active.
+Changing WiFi after the player is already running:
+
+- Press `F6` on the connected keyboard while signage content is playing.
+- Use `Tab`, arrow keys, `Enter`, and `Escape`; no mouse is required.
+- Select a network or type a hidden/manual SSID, enter the password, then choose `Connect`.
+- If you are SSHed in over WiFi, the SSH session can drop during the switch. The player keeps retrying the SignIT server automatically.
+- You can still use `signit-wifi.txt` on the boot partition for preconfiguring a client network before delivery.
 
 ### Option B - Install On Existing Raspberry Pi OS
 
@@ -467,7 +474,7 @@ How it works:
 - Admins and editors can update all outdated Pis from the Displays page.
 - Online Pis receive the update command immediately.
 - Offline Pis are queued and receive the update the next time they reconnect.
-- Player version `1.6.17` and newer includes Camera Wall mode for tiled RTSP/RTSPS camera playback, hardened stream window tiling, hardened single-stream playback, OTA update progress, power/network heartbeat diagnostics, safer Chromium launch behavior, and improved keyboard/manual WiFi setup. The player tries `ffplay` with TCP first, then falls back to `mpv`, writes stream diagnostics to `/opt/signit/logs/stream-player.log`, and reports update percent/ETA back to the dashboard.
+- Player version `1.6.19` and newer includes Camera Wall mode for tiled RTSP/RTSPS camera playback, hardened stream window tiling, hardened single-stream playback, OTA update progress, power/network heartbeat diagnostics, safer Chromium launch behavior, in-player F6 WiFi setup while content is running, improved keyboard/manual WiFi setup, last-known-good offline startup, white/black/frozen screen recovery, atomic cache downloads, atomic OTA rollback, and capped device diagnostic reports. The player tries `ffplay` with TCP first, then falls back to `mpv`, writes stream diagnostics to `/opt/signit/logs/stream-player.log`, and reports update percent/ETA back to the dashboard.
 
 Important bootstrap note:
 

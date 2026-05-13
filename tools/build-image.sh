@@ -364,7 +364,8 @@ ALOG
 cat > /etc/systemd/system/signit-display.service << 'DSVC'
 [Unit]
 Description=SignIT Display (Kiosk)
-After=systemd-user-sessions.service network.target
+After=systemd-user-sessions.service NetworkManager.service
+Wants=NetworkManager.service
 Conflicts=getty@tty1.service
 
 [Service]

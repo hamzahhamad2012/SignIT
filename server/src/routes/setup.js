@@ -270,7 +270,7 @@ ${pairingCode ? `#   Pairing Code: ${pairingCode}` : '#   Interactive mode (will
 
 SIGNIT_DIR="/opt/signit"
 VENV_DIR="$SIGNIT_DIR/venv"
-CONFIG_DIR="$HOME/.signit"
+CONFIG_DIR="$SIGNIT_DIR"
 SERVER_URL="${serverUrl}"
 PAIRING_CODE="${pairingCode || ''}"
 
@@ -353,7 +353,19 @@ configure_wifi() {
   echo ""
 
   if [ -n "$WIFI_SSID" ]; then
-    cat > /etc/wpa_supplicant/wpa_supplicant.conf << WIFIEOF
+    if command -v nmcli >/dev/null 2>&1; then
+      echo -e "  Using NetworkManager..."
+      nmcli radio wifi on >/dev/null 2>&1 || true
+      nmcli connection delete "$WIFI_SSID" >/dev/null 2>&1 || true
+      if nmcli dev wifi connect "$WIFI_SSID" password "$WIFI_PASS" ifname wlan0 >/dev/null 2>&1; then
+        nmcli connection modify "$WIFI_SSID" connection.autoconnect yes 802-11-wireless.powersave 2 >/dev/null 2>&1 || true
+      else
+        nmcli connection add type wifi ifname wlan0 con-name "$WIFI_SSID" ssid "$WIFI_SSID" >/dev/null 2>&1 || true
+        nmcli connection modify "$WIFI_SSID" wifi-sec.key-mgmt wpa-psk wifi-sec.psk "$WIFI_PASS" connection.autoconnect yes 802-11-wireless.powersave 2 >/dev/null 2>&1 || true
+        nmcli connection up "$WIFI_SSID" >/dev/null 2>&1 || true
+      fi
+    else
+      cat > /etc/wpa_supplicant/wpa_supplicant.conf << WIFIEOF
 ctrl_interface=DIR=/var/run/wpa_supplicant GROUP=netdev
 update_config=1
 country=US
@@ -364,7 +376,9 @@ network={
     key_mgmt=WPA-PSK
 }
 WIFIEOF
-    wpa_cli -i wlan0 reconfigure > /dev/null 2>&1 || true
+      wpa_cli -i wlan0 reconfigure > /dev/null 2>&1 || true
+    fi
+
     echo -e "  \${GREEN}Wi-Fi configured!\${NC} Connecting..."
     sleep 5
 
@@ -402,7 +416,7 @@ JOURNALEOF
 
 setup_player() {
   echo -e "\${BOLD}[2/5] Installing SignIT player...\${NC}"
-  mkdir -p "$SIGNIT_DIR" "$CONFIG_DIR/cache" "$CONFIG_DIR/logs"
+  mkdir -p "$SIGNIT_DIR" "$SIGNIT_DIR/cache" "$SIGNIT_DIR/logs"
 
   # Download player files from server
   for FILE in player.py config.py requirements.txt; do
@@ -470,6 +484,7 @@ setup_service() {
 
   REAL_USER=\${SUDO_USER:-\$(whoami)}
   REAL_HOME=\$(eval echo "~$REAL_USER")
+  chown -R "$REAL_USER:$REAL_USER" "$SIGNIT_DIR" 2>/dev/null || true
 
   cat > /etc/systemd/system/signit-player.service << SVCEOF
 [Unit]
@@ -813,8 +828,8 @@ echo "  Done"
 echo "[5/7] Configuring user directories..."
 REAL_USER=\$(logname 2>/dev/null || echo "pi")
 REAL_HOME=\$(eval echo "~$REAL_USER")
-mkdir -p "$REAL_HOME/.signit/cache" "$REAL_HOME/.signit/logs"
-chown -R "$REAL_USER:$REAL_USER" "$REAL_HOME/.signit"
+mkdir -p "$SIGNIT_DIR/cache" "$SIGNIT_DIR/logs"
+chown -R "$REAL_USER:$REAL_USER" "$SIGNIT_DIR"
 
 # ─── 6. Configure display + auto-login + kiosk ───
 echo "[6/7] Configuring display and auto-login..."
@@ -875,32 +890,11 @@ fi
 
 echo "  Done"
 
-# ─── 7. Create player systemd service ───
-echo "[7/7] Setting up auto-start service..."
-
-cat > /etc/systemd/system/signit-player.service << SVCEOF
-[Unit]
-Description=SignIT Digital Signage Player
-After=network-online.target graphical.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-User=$REAL_USER
-Environment=DISPLAY=:0
-Environment=XAUTHORITY=$REAL_HOME/.Xauthority
-Environment=HOME=$REAL_HOME
-WorkingDirectory=$SIGNIT_DIR
-ExecStart=$SIGNIT_DIR/venv/bin/python3 $SIGNIT_DIR/player.py
-Restart=always
-RestartSec=10
-
-[Install]
-WantedBy=graphical.target
-SVCEOF
-
+# ─── 7. Ensure only one player owns the screen ───
+echo "[7/7] Ensuring single player service..."
+systemctl disable --now signit-player 2>/dev/null || true
+rm -f /etc/systemd/system/signit-player.service
 systemctl daemon-reload
-systemctl enable signit-player
 echo "  Done"
 
 # ─── Clean up ───

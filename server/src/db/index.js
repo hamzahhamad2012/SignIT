@@ -100,6 +100,18 @@ function applyMigrations() {
     )
   `).run();
 
+  db.prepare(`
+    CREATE TABLE IF NOT EXISTS device_events (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      device_id TEXT REFERENCES devices(id) ON DELETE CASCADE,
+      event_type TEXT NOT NULL,
+      severity TEXT DEFAULT 'info' CHECK(severity IN ('debug','info','warning','error')),
+      summary TEXT,
+      details TEXT DEFAULT '{}',
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    )
+  `).run();
+
   if (!hasColumn('player_update_jobs', 'progress')) {
     db.prepare('ALTER TABLE player_update_jobs ADD COLUMN progress INTEGER DEFAULT 0').run();
   }
@@ -120,6 +132,9 @@ function applyMigrations() {
   db.prepare('CREATE INDEX IF NOT EXISTS idx_widgets_asset ON widgets(asset_id)').run();
   db.prepare('CREATE INDEX IF NOT EXISTS idx_activity_log_user ON activity_log(user_id)').run();
   db.prepare('CREATE INDEX IF NOT EXISTS idx_activity_log_category ON activity_log(category)').run();
+  db.prepare('CREATE INDEX IF NOT EXISTS idx_device_events_device ON device_events(device_id)').run();
+  db.prepare('CREATE INDEX IF NOT EXISTS idx_device_events_type ON device_events(event_type)').run();
+  db.prepare('CREATE INDEX IF NOT EXISTS idx_device_events_created ON device_events(created_at)').run();
   db.prepare('CREATE INDEX IF NOT EXISTS idx_player_update_jobs_status ON player_update_jobs(status)').run();
   db.prepare('CREATE INDEX IF NOT EXISTS idx_devices_player_mode ON devices(player_mode)').run();
   db.prepare('CREATE INDEX IF NOT EXISTS idx_playlists_playlist_type ON playlists(playlist_type)').run();
@@ -145,6 +160,7 @@ function applyMigrations() {
   const updateCategory = db.prepare('UPDATE activity_log SET category = ? WHERE id = ?');
   uncategorized.forEach((entry) => updateCategory.run(getActivityCategory(entry.action), entry.id));
   pruneOldActivity(db);
+  db.prepare("DELETE FROM device_events WHERE created_at < datetime('now', '-90 days')").run();
 }
 
 export function initDatabase() {

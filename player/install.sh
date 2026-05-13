@@ -8,6 +8,8 @@ set -e
 SIGNIT_DIR="/opt/signit"
 VENV_DIR="$SIGNIT_DIR/venv"
 SERVICE_FILE="/etc/systemd/system/signit-player.service"
+CONFIG_FILE="$SIGNIT_DIR/config.json"
+INSTALL_USER="${SUDO_USER:-signit}"
 
 echo ""
 echo "╔═══════════════════════════════════════╗"
@@ -31,8 +33,7 @@ apt-get install -y -qq python3 python3-pip python3-venv chromium-browser \
   ffmpeg mpv > /dev/null 2>&1
 
 echo "[2/7] Creating installation directory..."
-mkdir -p "$SIGNIT_DIR"
-mkdir -p ~/.signit/cache ~/.signit/logs
+mkdir -p "$SIGNIT_DIR" "$SIGNIT_DIR/cache" "$SIGNIT_DIR/logs"
 
 echo "[3/7] Enabling persistent diagnostics..."
 mkdir -p /var/log/journal /etc/systemd/journald.conf.d
@@ -51,7 +52,6 @@ cp -r "$(dirname "$0")"/* "$SIGNIT_DIR/"
 "$VENV_DIR/bin/pip" install -q -r "$SIGNIT_DIR/requirements.txt"
 
 echo "[5/7] Configuring player..."
-CONFIG_FILE="$HOME/.signit/config.json"
 cat > "$CONFIG_FILE" << EOF
 {
   "server_url": "$SERVER_URL",
@@ -64,6 +64,9 @@ cat > "$CONFIG_FILE" << EOF
   "display_rotation": "landscape"
 }
 EOF
+if id "$INSTALL_USER" >/dev/null 2>&1; then
+  chown -R "$INSTALL_USER:$INSTALL_USER" "$SIGNIT_DIR" 2>/dev/null || true
+fi
 
 echo "[6/7] Creating systemd service..."
 cat > "$SERVICE_FILE" << EOF
@@ -74,9 +77,10 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-User=$(whoami)
+User=$INSTALL_USER
 Environment=DISPLAY=:0
-Environment=XAUTHORITY=/home/$(whoami)/.Xauthority
+Environment=HOME=/home/$INSTALL_USER
+Environment=XAUTHORITY=/home/$INSTALL_USER/.Xauthority
 WorkingDirectory=$SIGNIT_DIR
 ExecStart=$VENV_DIR/bin/python3 $SIGNIT_DIR/player.py
 Restart=always

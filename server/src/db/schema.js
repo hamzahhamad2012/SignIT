@@ -167,6 +167,16 @@ export const schema = `
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
   );
 
+  CREATE TABLE IF NOT EXISTS device_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    device_id TEXT REFERENCES devices(id) ON DELETE CASCADE,
+    event_type TEXT NOT NULL,
+    severity TEXT DEFAULT 'info' CHECK(severity IN ('debug','info','warning','error')),
+    summary TEXT,
+    details TEXT DEFAULT '{}',
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+  );
+
   CREATE TABLE IF NOT EXISTS player_update_jobs (
     device_id TEXT PRIMARY KEY REFERENCES devices(id) ON DELETE CASCADE,
     target_version TEXT NOT NULL,
@@ -238,6 +248,9 @@ export const schema = `
   CREATE INDEX IF NOT EXISTS idx_schedules_active ON schedules(is_active);
   CREATE INDEX IF NOT EXISTS idx_activity_log_created ON activity_log(created_at);
   CREATE INDEX IF NOT EXISTS idx_activity_log_user ON activity_log(user_id);
+  CREATE INDEX IF NOT EXISTS idx_device_events_device ON device_events(device_id);
+  CREATE INDEX IF NOT EXISTS idx_device_events_type ON device_events(event_type);
+  CREATE INDEX IF NOT EXISTS idx_device_events_created ON device_events(created_at);
   CREATE INDEX IF NOT EXISTS idx_player_update_jobs_status ON player_update_jobs(status);
   CREATE INDEX IF NOT EXISTS idx_wall_screens_wall ON wall_screens(wall_id);
   CREATE INDEX IF NOT EXISTS idx_widgets_type ON widgets(type);

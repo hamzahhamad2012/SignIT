@@ -28,15 +28,19 @@ import psutil
 from config import load_config, save_config, CACHE_DIR, LOG_DIR
 
 CONTENT_SERVER_PORT = 8889
-PLAYER_VERSION = '1.6.17'
+PLAYER_VERSION = '1.6.19'
 STREAM_LOG_PATH = os.path.join(LOG_DIR, 'stream-player.log')
 CHROMIUM_LOG_PATH = os.path.join(LOG_DIR, 'chromium.log')
 DISPLAY_DIAGNOSTICS_PATH = os.path.join(LOG_DIR, 'display-diagnostics.json')
+LAST_PLAYLIST_PATH = os.path.join(CACHE_DIR, 'last-playlist.json')
 CHROMIUM_DEFAULT_FLAGS = '/etc/chromium.d/default-flags'
 CHROMIUM_BACKUP_DIR = '/var/backups/signit/chromium.d'
 CHROMIUM_PROFILE_DIR = '/tmp/signit-chromium-profile'
 BLACK_SCREEN_CHECK_INTERVAL = 30
 BLACK_SCREEN_RECOVERY_COOLDOWN = 90
+SCREENSHOT_MIN_INTERVAL = 8
+DIAGNOSTIC_REPORT_INTERVAL = 300
+MAX_REPORT_TEXT = 5000
 UPDATE_FILES = {
     'player.py',
     'config.py',
@@ -84,10 +88,19 @@ class SignITPlayer:
         self.last_update_progress = 0
         self.display_power_state = 'on'
         self.black_screen_hits = 0
+        self.screen_issue_hits = 0
         self.last_black_screen_recovery = 0
+        self.last_screen_probe_hash = None
+        self.last_screen_probe_changed_at = time.time()
+        self.last_diagnostic_report = 0
+        self.last_media_error = None
+        self.last_client_log = None
+        self.last_browser_error_at = 0
+        self.last_screenshot_at = 0
         self.last_power_warning = 0
         self.force_software_chromium_until = 0
         self.last_fullscreen_enforce = 0
+        self.screenshot_lock = threading.Lock()
         self.chromium_launch_lock = threading.Lock()
         self.content_refresh_run_lock = threading.Lock()
         self.content_refresh_state_lock = threading.Lock()
@@ -118,16 +131,16 @@ class SignITPlayer:
             elif cmd == 'restart_player':
                 self._restart_player()
             elif cmd == 'screenshot':
-                self._take_screenshot()
+                threading.Thread(target=self._take_screenshot, kwargs={'force': True}, daemon=True).start()
             elif cmd == 'refresh':
                 self._request_content_refresh('command:refresh')
             elif cmd == 'refresh_config':
-                self._refresh_device_config(force_restart=True)
+                threading.Thread(target=self._refresh_device_config, kwargs={'force_restart': True}, daemon=True).start()
                 self._request_content_refresh('command:refresh_config')
             elif cmd == 'update_player':
                 threading.Thread(target=self._update_player, args=(params,), daemon=True).start()
             elif cmd == 'display_power':
-                self._set_display_power(params.get('state', 'on'))
+                threading.Thread(target=self._set_display_power, args=(params.get('state', 'on'),), daemon=True).start()
 
         @self.sio.on('playlist:deploy')
         def on_playlist_deploy(data):
@@ -310,6 +323,7 @@ class SignITPlayer:
 
             log.info(f'Loading playlist: {playlist["name"]} ({len(playlist.get("items", []))} items)')
             self.current_playlist = playlist
+            self._save_last_known_playlist(playlist)
 
             if playlist.get('system_action') == 'display_off':
                 self._stop_stream_player()
@@ -345,6 +359,8 @@ class SignITPlayer:
 
         except Exception as e:
             log.error(f'Content refresh failed: {e}')
+            self.last_media_error = str(e)
+            self._report_diagnostics_async('content_refresh_failed', severity='error', summary=str(e))
             if self.sio.connected:
                 self.sio.emit('player:error', {'error': str(e)})
         finally:
@@ -1253,7 +1269,88 @@ class SignITPlayer:
             self.active_stream_url = None
             self._start_stream_player(url)
 
-    def _download_assets(self, items):
+    def _save_last_known_playlist(self, playlist):
+        """Persist the last displayable playlist so boot can recover before the server is reachable."""
+        if not playlist or playlist.get('system_action') == 'display_off':
+            return
+        try:
+            os.makedirs(CACHE_DIR, exist_ok=True)
+            payload = {
+                'saved_at': datetime.utcnow().isoformat() + 'Z',
+                'playlist': playlist,
+            }
+            tmp_path = LAST_PLAYLIST_PATH + '.part'
+            with open(tmp_path, 'w') as f:
+                json.dump(payload, f)
+            os.replace(tmp_path, LAST_PLAYLIST_PATH)
+        except Exception as e:
+            log.warning(f'Could not save last-known playlist: {e}')
+
+    def _load_last_known_playlist(self):
+        try:
+            if not os.path.exists(LAST_PLAYLIST_PATH):
+                return None
+            with open(LAST_PLAYLIST_PATH) as f:
+                payload = json.load(f)
+            playlist = payload.get('playlist') if isinstance(payload, dict) else None
+            if playlist and playlist.get('items') is not None:
+                return playlist
+        except Exception as e:
+            log.warning(f'Could not load last-known playlist: {e}')
+        return None
+
+    def _launch_last_known_good(self, reason='startup'):
+        """Render cached content before network registration so power cycles do not leave a dead screen."""
+        playlist = self._load_last_known_playlist()
+        if not playlist:
+            log.info('No last-known playlist cached for offline startup')
+            return False
+
+        try:
+            log.info(f'Launching last-known-good playlist before registration ({reason}): {playlist.get("name", "playlist")}')
+            self.current_playlist = playlist
+            self._set_display_power('on')
+            if self._is_stream_playlist(playlist):
+                return self._start_stream_wall(playlist)
+            initial_stream_url = self._initial_stream_url(playlist)
+            if self._is_stream_only_playlist(playlist) and initial_stream_url:
+                return self._start_stream_player(initial_stream_url)
+            self._download_assets(playlist.get('items', []), allow_network=False)
+            self._generate_display_html(playlist)
+            self._launch_chromium()
+            if initial_stream_url:
+                self._start_stream_player(initial_stream_url)
+            return True
+        except Exception as e:
+            log.error(f'Last-known-good launch failed: {e}')
+            self.last_media_error = f'Last-known-good launch failed: {e}'
+            return False
+
+    def _expected_asset_size(self, item):
+        for key in ('size', 'asset_size', 'file_size'):
+            try:
+                value = int(item.get(key) or 0)
+                if value > 0:
+                    return value
+            except Exception:
+                continue
+        return None
+
+    def _is_cached_asset_valid(self, cache_path, expected_size=None):
+        try:
+            if not os.path.exists(cache_path):
+                return False
+            actual_size = os.path.getsize(cache_path)
+            if actual_size <= 0:
+                return False
+            if expected_size and actual_size != expected_size:
+                log.warning(f'Cached asset size mismatch for {os.path.basename(cache_path)}: {actual_size} != {expected_size}')
+                return False
+            return True
+        except OSError:
+            return False
+
+    def _download_assets(self, items, allow_network=True):
         """Download and cache all assets needed for the playlist."""
         for item in items:
             if item.get('asset_type') in ('url', 'stream'):
@@ -1264,11 +1361,21 @@ class SignITPlayer:
                 continue
 
             cache_path = os.path.join(CACHE_DIR, filename)
+            expected_size = self._expected_asset_size(item)
+            if self._is_cached_asset_valid(cache_path, expected_size=expected_size):
+                log.info(f'Asset cache ready: {filename} ({os.path.getsize(cache_path)} bytes)')
+                continue
+
             if os.path.exists(cache_path):
                 try:
-                    log.info(f'Asset cache ready: {filename} ({os.path.getsize(cache_path)} bytes)')
-                except OSError:
-                    log.info(f'Asset cache ready: {filename}')
+                    bad_size = os.path.getsize(cache_path)
+                    os.remove(cache_path)
+                    log.warning(f'Removed invalid cached asset before redownload: {filename} ({bad_size} bytes)')
+                except Exception as e:
+                    log.warning(f'Could not remove invalid cached asset {filename}: {e}')
+
+            if not allow_network:
+                log.warning(f'Cached asset missing/invalid during offline startup: {filename}')
                 continue
 
             try:
@@ -1277,12 +1384,26 @@ class SignITPlayer:
                 r = requests.get(url, stream=True, timeout=120)
                 r.raise_for_status()
                 os.makedirs(os.path.dirname(cache_path), exist_ok=True)
-                with open(cache_path, 'wb') as f:
+                tmp_path = cache_path + '.part'
+                try:
+                    if os.path.exists(tmp_path):
+                        os.remove(tmp_path)
+                except Exception:
+                    pass
+                with open(tmp_path, 'wb') as f:
                     for chunk in r.iter_content(chunk_size=8192):
-                        f.write(chunk)
+                        if chunk:
+                            f.write(chunk)
+                actual_size = os.path.getsize(tmp_path)
+                if actual_size <= 0:
+                    raise RuntimeError('downloaded file was empty')
+                if expected_size and actual_size != expected_size:
+                    raise RuntimeError(f'downloaded size mismatch: {actual_size} != {expected_size}')
+                os.replace(tmp_path, cache_path)
                 log.info(f'Cached: {filename} ({os.path.getsize(cache_path)} bytes)')
             except Exception as e:
                 log.error(f'Download failed for {filename}: {e}')
+                self.last_media_error = f'Download failed for {filename}: {e}'
 
     def _ensure_display_html(self):
         """Make sure the local kiosk page still exists for browser-rendered playlists."""
@@ -1372,22 +1493,50 @@ class SignITPlayer:
         except Exception:
             return []
 
-    def _is_black_image(self, path):
+    def _classify_screen_image(self, path):
         try:
             from PIL import Image, ImageStat
             with Image.open(path) as image:
                 grayscale = image.convert('L').resize((64, 36))
                 stat = ImageStat.Stat(grayscale)
                 mean = stat.mean[0]
-                max_pixel = grayscale.getextrema()[1]
-                return mean < 4 and max_pixel < 18
+                min_pixel, max_pixel = grayscale.getextrema()
+                digest = hashlib.sha1(grayscale.tobytes()).hexdigest()
+                now = time.time()
+                if digest != self.last_screen_probe_hash:
+                    self.last_screen_probe_hash = digest
+                    self.last_screen_probe_changed_at = now
+                if mean < 4 and max_pixel < 18:
+                    return 'black'
+                if mean > 248 and min_pixel > 235:
+                    return 'white'
+                if self._playlist_should_change_visuals() and now - self.last_screen_probe_changed_at > self._visual_stale_seconds():
+                    return 'frozen'
+                return 'normal'
         except Exception as e:
             log.warning(f'Could not inspect screenshot brightness: {e}')
-            return False
+            return 'unknown'
+
+    def _playlist_should_change_visuals(self):
+        items = self.current_playlist.get('items', []) if self.current_playlist else []
+        if len(items) > 1:
+            return True
+        return any((item.get('asset_type') or item.get('type')) in ('video', 'stream') for item in items)
+
+    def _visual_stale_seconds(self):
+        items = self.current_playlist.get('items', []) if self.current_playlist else []
+        total_duration = 0
+        for item in items:
+            try:
+                total_duration += int(item.get('duration') or 10)
+            except Exception:
+                total_duration += 10
+        return max(180, min(900, total_duration * 3 + 60))
 
     def _check_black_screen(self):
         if not self._should_monitor_browser_playlist():
             self.black_screen_hits = 0
+            self.screen_issue_hits = 0
             return
 
         if self.chromium_launch_lock.locked():
@@ -1405,15 +1554,19 @@ class SignITPlayer:
             log.debug(f'Black-screen probe failed: {result.stderr.decode(errors="ignore") if result.stderr else ""}')
             return
 
-        if not self._is_black_image(probe_path):
-            if self.black_screen_hits:
-                log.info('Black-screen watchdog saw normal output again')
+        issue = self._classify_screen_image(probe_path)
+        if issue in ('normal', 'unknown'):
+            if self.screen_issue_hits:
+                log.info('Screen watchdog saw normal output again')
             self.black_screen_hits = 0
+            self.screen_issue_hits = 0
             return
 
-        self.black_screen_hits += 1
-        log.warning(f'Black-screen watchdog detected black output ({self.black_screen_hits}/2)')
-        if self.black_screen_hits < 2:
+        self.screen_issue_hits += 1
+        if issue == 'black':
+            self.black_screen_hits += 1
+        log.warning(f'Screen watchdog detected {issue} output ({self.screen_issue_hits}/2)')
+        if self.screen_issue_hits < 2:
             return
 
         now = time.time()
@@ -1422,12 +1575,14 @@ class SignITPlayer:
 
         self.last_black_screen_recovery = now
         self.black_screen_hits = 0
-        self._recover_from_black_screen()
+        self.screen_issue_hits = 0
+        self._recover_from_black_screen(issue=issue)
 
-    def _recover_from_black_screen(self):
+    def _recover_from_black_screen(self, issue='black'):
         playlist_name = self.current_playlist.get('name', 'current playlist') if self.current_playlist else 'current playlist'
-        log.error(f'Recovering black display while playing {playlist_name}')
-        log.warning('Black-screen recovery will relaunch Chromium cleanly without switching renderers')
+        log.error(f'Recovering {issue} display while playing {playlist_name}')
+        log.warning('Screen recovery will relaunch Chromium cleanly without switching renderers')
+        self._report_diagnostics_async(f'screen_{issue}', severity='error', summary=f'Recovering {issue} display')
         current = self.current_playlist
         self._set_display_power('on')
         self._stop_chromium()
@@ -1489,6 +1644,7 @@ class SignITPlayer:
         bg_color = playlist.get('bg_color', '#000000')
         layout = playlist.get('layout', 'fullscreen')
         player_css = self._rotation_player_css()
+        wifi_overlay = self._wifi_overlay_bundle()
 
         single_item = len(items) == 1
         diagnostics = {
@@ -1650,6 +1806,7 @@ class SignITPlayer:
   }},500);
 	}})();
 	</script>
+{wifi_overlay}
 	</body></html>'''
 
         display_path = os.path.join(CACHE_DIR, 'display.html')
@@ -1668,6 +1825,7 @@ class SignITPlayer:
 
     def _write_simple_screen(self, title, message, background='#09090b'):
         player_css = self._rotation_player_css()
+        wifi_overlay = self._wifi_overlay_bundle()
         html = f'''<!DOCTYPE html>
 <html><head><meta charset="UTF-8">
 <style>
@@ -1691,6 +1849,7 @@ class SignITPlayer:
   <h1>{title}</h1>
   <p>{message}</p>
 </div>
+{wifi_overlay}
 </body></html>'''
 
         display_path = os.path.join(CACHE_DIR, 'display.html')
@@ -2078,24 +2237,34 @@ class SignITPlayer:
                 log.warning(f'xdotool attempt {attempt+1} failed: {e}')
         log.warning('xdotool: gave up after 8 attempts')
 
-    def _take_screenshot(self):
+    def _take_screenshot(self, force=False):
         """Capture a screenshot and send to server."""
+        if not force and time.time() - self.last_screenshot_at < SCREENSHOT_MIN_INTERVAL:
+            log.info('Screenshot skipped because another capture ran recently')
+            return
+        if not self.screenshot_lock.acquire(blocking=False):
+            log.info('Screenshot skipped because another capture is already running')
+            return
         try:
+            self.last_screenshot_at = time.time()
             screenshot_path = os.path.join(CACHE_DIR, 'screenshot.png')
             jpeg_path = os.path.join(CACHE_DIR, 'screenshot.jpg')
             env = os.environ.copy()
             env.setdefault('DISPLAY', ':0')
             result = subprocess.run(
                 ['scrot', '-o', screenshot_path],
-                env=env, capture_output=True, timeout=10
+                env=env, capture_output=True, timeout=8
             )
             if result.returncode != 0:
+                log.warning(f'Screenshot command failed: {result.stderr.decode(errors="ignore") if result.stderr else ""}')
                 return
 
             # Compress to JPEG for much smaller payload (~10x smaller than PNG)
             try:
                 from PIL import Image
-                img = Image.open(screenshot_path)
+                img = Image.open(screenshot_path).convert('RGB')
+                resample = getattr(getattr(Image, 'Resampling', Image), 'LANCZOS', Image.BICUBIC)
+                img.thumbnail((1600, 1600), resample)
                 img.save(jpeg_path, 'JPEG', quality=70, optimize=True)
                 send_path = jpeg_path
                 mime = 'image/jpeg'
@@ -2123,6 +2292,11 @@ class SignITPlayer:
 
         except Exception as e:
             log.error(f'Screenshot error: {e}')
+        finally:
+            try:
+                self.screenshot_lock.release()
+            except RuntimeError:
+                pass
 
     def _get_system_metrics(self):
         """Collect system health metrics."""
@@ -2181,6 +2355,77 @@ class SignITPlayer:
         metrics['player_version'] = PLAYER_VERSION
         return metrics
 
+    def _command_text(self, command, timeout=5, max_chars=MAX_REPORT_TEXT):
+        try:
+            result = subprocess.run(command, capture_output=True, text=True, timeout=timeout)
+            text = (result.stdout or result.stderr or '').strip()
+            return text[-max_chars:]
+        except Exception as e:
+            return f'command failed: {e}'
+
+    def _read_text_file(self, path, max_chars=MAX_REPORT_TEXT):
+        return self._tail_file(path, max_chars=max_chars)
+
+    def _collect_diagnostics(self, reason='periodic'):
+        """Collect capped evidence that survives off-device in the server event log."""
+        diagnostics = {
+            'reason': reason,
+            'player_version': PLAYER_VERSION,
+            'generated_at': datetime.utcnow().isoformat() + 'Z',
+            'device_id': self.device_id,
+            'playlist': {
+                'id': self.current_playlist.get('id') if self.current_playlist else None,
+                'name': self.current_playlist.get('name') if self.current_playlist else None,
+                'items': len(self.current_playlist.get('items', [])) if self.current_playlist else 0,
+                'type': self.current_playlist.get('playlist_type') if self.current_playlist else None,
+            },
+            'display_power_state': self.display_power_state,
+            'last_media_error': self.last_media_error,
+            'last_client_log': self.last_client_log,
+            'metrics': self._get_system_metrics(),
+            'boot_id': self._read_text_file('/proc/sys/kernel/random/boot_id', max_chars=80),
+            'service': self._command_text(['systemctl', 'show', 'signit-display', '-p', 'NRestarts', '-p', 'ExecMainStatus', '-p', 'ActiveState', '-p', 'SubState', '--no-pager'], timeout=5, max_chars=1200),
+            'processes': self._command_text(['bash', '-lc', "ps -eo pid,ppid,stat,etimes,cmd | grep -E 'chromium|player.py|Xorg|xinit' | grep -v grep"], timeout=5, max_chars=2000),
+            'xrandr': self._command_text(['bash', '-lc', 'DISPLAY=:0 xrandr --query'], timeout=5, max_chars=2400),
+            'network': self._command_text(['bash', '-lc', 'ip addr; echo ---; ip route; echo ---; nmcli -t -f DEVICE,TYPE,STATE,CONNECTION dev status 2>/dev/null || true'], timeout=6, max_chars=3500),
+            'wifi': self._command_text(['bash', '-lc', "iw dev 2>/dev/null; iw dev wlan0 link 2>/dev/null || true; rfkill list 2>/dev/null || true"], timeout=5, max_chars=2200),
+            'voltage': self._command_text(['bash', '-lc', 'vcgencmd get_throttled 2>/dev/null || true'], timeout=4, max_chars=200),
+            'display_diagnostics': self._read_text_file(DISPLAY_DIAGNOSTICS_PATH, max_chars=MAX_REPORT_TEXT),
+            'player_log_tail': self._read_text_file(os.path.join(LOG_DIR, 'player.log'), max_chars=MAX_REPORT_TEXT),
+            'chromium_log_tail': self._read_text_file(CHROMIUM_LOG_PATH, max_chars=MAX_REPORT_TEXT),
+            'stream_log_tail': self._read_text_file(STREAM_LOG_PATH, max_chars=MAX_REPORT_TEXT),
+        }
+        return diagnostics
+
+    def _report_diagnostics(self, reason='periodic', severity='info', summary=None):
+        if not self.device_id:
+            return False
+        try:
+            payload = {
+                'event_type': reason,
+                'severity': severity,
+                'summary': summary or reason,
+                'diagnostics': self._collect_diagnostics(reason),
+            }
+            self._api_post('/api/player/report', payload, device_header=True)
+            self.last_diagnostic_report = time.time()
+            return True
+        except Exception as e:
+            log.warning(f'Diagnostic report failed: {e}')
+            return False
+
+    def _report_diagnostics_async(self, reason='periodic', severity='info', summary=None):
+        threading.Thread(
+            target=self._report_diagnostics,
+            args=(reason, severity, summary),
+            daemon=True,
+        ).start()
+
+    def diagnostic_reporter(self):
+        while self.running:
+            time.sleep(DIAGNOSTIC_REPORT_INTERVAL)
+            self._report_diagnostics('periodic', severity='info', summary='Periodic Pi diagnostic report')
+
     def _get_os_info(self):
         """Get OS information string."""
         try:
@@ -2192,7 +2437,10 @@ class SignITPlayer:
     def _reboot(self):
         """Reboot the Raspberry Pi."""
         log.info('Rebooting system...')
-        subprocess.run(['sudo', 'reboot'], capture_output=True)
+        try:
+            subprocess.run(['sudo', '-n', 'reboot'], capture_output=True, timeout=5)
+        except Exception as e:
+            log.error(f'Reboot command failed: {e}')
 
     def _restart_player(self):
         """Restart the player process."""
@@ -2248,6 +2496,35 @@ class SignITPlayer:
                     progress_callback(len(chunk))
         return target
 
+    def _verify_update_package(self, update_dir):
+        player_path = os.path.join(update_dir, 'player.py')
+        if not os.path.exists(player_path):
+            raise RuntimeError('Update package did not include player.py')
+        subprocess.run([sys.executable, '-m', 'py_compile', player_path], check=True, timeout=30)
+
+    def _backup_player_files(self, files):
+        backup_dir = os.path.join('/opt/signit/.rollback', datetime.utcnow().strftime('%Y%m%d%H%M%S'))
+        for relative_path in files:
+            source = os.path.join('/opt/signit', relative_path)
+            if not os.path.exists(source):
+                continue
+            target = os.path.join(backup_dir, relative_path)
+            os.makedirs(os.path.dirname(target), exist_ok=True)
+            shutil.copy2(source, target)
+        return backup_dir
+
+    def _restore_player_backup(self, backup_dir):
+        if not backup_dir or not os.path.isdir(backup_dir):
+            return
+        for root, _, filenames in os.walk(backup_dir):
+            for filename in filenames:
+                source = os.path.join(root, filename)
+                relative_path = os.path.relpath(source, backup_dir)
+                target = os.path.join('/opt/signit', relative_path)
+                os.makedirs(os.path.dirname(target), exist_ok=True)
+                shutil.copy2(source, target)
+        log.warning(f'Restored player files from rollback backup: {backup_dir}')
+
     def _update_player(self, params=None):
         """Download the latest player files from the SignIT server and restart."""
         if self.update_in_progress:
@@ -2258,6 +2535,7 @@ class SignITPlayer:
         force = bool(params.get('force'))
         self.update_in_progress = True
         update_dir = '/opt/signit/.update'
+        backup_dir = None
 
         try:
             self._emit_update_progress('checking', 3, 'Checking latest player version')
@@ -2318,9 +2596,8 @@ class SignITPlayer:
 
             self._emit_update_progress('installing', 72, 'Verifying update package', latest_version)
 
-            required = os.path.join(update_dir, 'player.py')
-            if not os.path.exists(required):
-                raise RuntimeError('Update package did not include player.py')
+            self._verify_update_package(update_dir)
+            backup_dir = self._backup_player_files(files)
 
             for index, relative_path in enumerate(files):
                 install_progress = 75 + int(((index + 1) / max(len(files), 1)) * 10)
@@ -2336,7 +2613,9 @@ class SignITPlayer:
                 if not os.path.exists(source):
                     continue
                 os.makedirs(os.path.dirname(destination), exist_ok=True)
-                shutil.copy2(source, destination)
+                staged = destination + '.new'
+                shutil.copy2(source, staged)
+                os.replace(staged, destination)
 
             requirements = '/opt/signit/requirements.txt'
             if os.path.exists(requirements):
@@ -2356,6 +2635,12 @@ class SignITPlayer:
             self._restart_player()
         except Exception as e:
             log.error(f'Player update failed: {e}')
+            if backup_dir:
+                try:
+                    self._restore_player_backup(backup_dir)
+                except Exception as restore_error:
+                    log.error(f'Rollback failed: {restore_error}')
+            self._report_diagnostics_async('update_failed', severity='error', summary=str(e))
             self._emit_update_progress('failed', self.last_update_progress, 'Update failed', params.get('version'), eta_seconds=0)
             self._emit_player_status(update_status='failed', update_error=str(e), player_version=PLAYER_VERSION)
         finally:
@@ -2377,6 +2662,395 @@ class SignITPlayer:
         r.raise_for_status()
         return r.json()
 
+    def _parse_nmcli_line(self, line):
+        fields = []
+        current = []
+        escaped = False
+        for ch in line.rstrip('\n'):
+            if escaped:
+                current.append(ch)
+                escaped = False
+            elif ch == '\\':
+                escaped = True
+            elif ch == ':':
+                fields.append(''.join(current))
+                current = []
+            else:
+                current.append(ch)
+        fields.append(''.join(current))
+        return fields
+
+    def _wifi_run(self, cmd, timeout=12, root=True):
+        full_cmd = list(cmd)
+        if root and os.geteuid() != 0:
+            # -n prevents a hidden sudo password prompt from freezing the player.
+            full_cmd = ['sudo', '-n'] + full_cmd
+        return subprocess.run(full_cmd, capture_output=True, text=True, timeout=timeout)
+
+    def _wifi_connection_name(self, ssid):
+        digest = hashlib.sha1(str(ssid or '').encode('utf-8')).hexdigest()[:12]
+        return f'signit-{digest}'
+
+    def _ensure_wifi_ready(self):
+        errors = []
+        steps = [
+            (['rfkill', 'unblock', 'wifi'], 5),
+            (['nmcli', 'radio', 'wifi', 'on'], 8),
+            (['ip', 'link', 'set', 'wlan0', 'up'], 5),
+            (['nmcli', 'dev', 'set', 'wlan0', 'managed', 'yes'], 8),
+        ]
+        for cmd, timeout in steps:
+            try:
+                result = self._wifi_run(cmd, timeout=timeout)
+                detail = (result.stderr or result.stdout or '').strip()
+                if result.returncode != 0 and detail:
+                    errors.append(detail)
+            except Exception as e:
+                errors.append(str(e))
+        time.sleep(0.5)
+        return errors
+
+    def _wifi_current_ssid(self):
+        try:
+            result = self._wifi_run(['nmcli', '-t', '-f', 'ACTIVE,SSID', 'dev', 'wifi'], timeout=8)
+            for line in result.stdout.splitlines():
+                parts = self._parse_nmcli_line(line)
+                if len(parts) >= 2 and parts[0].lower() == 'yes' and parts[1].strip():
+                    return parts[1].strip()
+        except Exception:
+            pass
+        return ''
+
+    def _wifi_ip(self):
+        for iface in ('wlan0', 'eth0'):
+            try:
+                result = subprocess.run(
+                    ['ip', '-4', '-o', 'addr', 'show', iface],
+                    capture_output=True,
+                    text=True,
+                    timeout=4,
+                )
+                if result.returncode == 0:
+                    parts = result.stdout.split()
+                    if 'inet' in parts:
+                        return parts[parts.index('inet') + 1].split('/')[0]
+            except Exception:
+                pass
+        return ''
+
+    def _wifi_status(self):
+        ssid = self._wifi_current_ssid()
+        return {
+            'success': True,
+            'connected': bool(ssid),
+            'ssid': ssid,
+            'ip': self._wifi_ip(),
+            'server_url': self.server_url,
+        }
+
+    def _scan_wifi_networks(self):
+        networks = []
+        try:
+            prep_errors = self._ensure_wifi_ready()
+            result = self._wifi_run(
+                ['nmcli', '-t', '-f', 'SSID,SIGNAL,SECURITY,IN-USE', 'dev', 'wifi', 'list', '--rescan', 'yes'],
+                timeout=30,
+            )
+            if result.returncode != 0:
+                detail = (result.stderr or result.stdout or 'Wi-Fi scan failed').strip()
+                if prep_errors:
+                    detail = f'{detail} | setup: {" | ".join(prep_errors)}'
+                return {'success': False, 'error': detail, 'networks': []}
+
+            seen = set()
+            for line in result.stdout.splitlines():
+                parts = self._parse_nmcli_line(line)
+                ssid = parts[0] if parts else ''
+                if not ssid or ssid == '--' or ssid in seen:
+                    continue
+                seen.add(ssid)
+                signal = int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else 0
+                security_label = parts[2] if len(parts) > 2 else ''
+                networks.append({
+                    'ssid': ssid,
+                    'signal': signal,
+                    'security': bool(security_label and security_label != '--'),
+                    'security_label': security_label if security_label and security_label != '--' else '',
+                    'in_use': '*' in parts[3] if len(parts) > 3 else False,
+                })
+            networks.sort(key=lambda item: (-item.get('in_use', False), -item.get('signal', 0), item.get('ssid', '').lower()))
+            return {'success': True, 'networks': networks, **self._wifi_status()}
+        except Exception as e:
+            return {'success': False, 'error': str(e), 'networks': []}
+
+    def _try_wifi_profile(self, ssid, password, mode):
+        conn_name = self._wifi_connection_name(ssid)
+        try:
+            self._wifi_run(['nmcli', 'connection', 'delete', conn_name], timeout=15)
+        except Exception:
+            pass
+
+        add = self._wifi_run(
+            ['nmcli', 'connection', 'add', 'type', 'wifi', 'ifname', 'wlan0', 'con-name', conn_name, 'ssid', ssid],
+            timeout=20,
+        )
+        if add.returncode != 0:
+            return add
+
+        modify = [
+            'nmcli', 'connection', 'modify', conn_name,
+            'connection.autoconnect', 'yes',
+            'ipv4.method', 'auto',
+            'ipv6.method', 'auto',
+            '802-11-wireless.powersave', '2',
+        ]
+        if mode == 'open':
+            pass
+        elif mode == 'wep':
+            modify += ['wifi-sec.key-mgmt', 'none', 'wifi-sec.wep-key0', password]
+        elif mode == 'sae':
+            modify += ['wifi-sec.key-mgmt', 'sae', 'wifi-sec.psk', password]
+        else:
+            modify += ['wifi-sec.key-mgmt', 'wpa-psk', 'wifi-sec.psk', password]
+
+        mod = self._wifi_run(modify, timeout=20)
+        if mod.returncode != 0:
+            return mod
+        return self._wifi_run(['nmcli', '--wait', '35', 'connection', 'up', conn_name], timeout=45)
+
+    def _connect_wifi_network(self, ssid, password='', security=''):
+        ssid = str(ssid or '').strip()
+        password = str(password or '')
+        security = str(security or '')
+        if not ssid:
+            return {'success': False, 'error': 'SSID is required'}
+
+        try:
+            prep_errors = self._ensure_wifi_ready()
+            attempts = []
+
+            def record(label, result):
+                detail = (getattr(result, 'stderr', '') or getattr(result, 'stdout', '') or '').strip()
+                attempts.append(f'{label}: {detail}' if detail else label)
+                return getattr(result, 'returncode', 1) == 0
+
+            direct = ['nmcli', '--wait', '35', 'dev', 'wifi', 'connect', ssid, 'ifname', 'wlan0']
+            if password:
+                direct += ['password', password]
+            if record('direct', self._wifi_run(direct, timeout=45)):
+                time.sleep(2)
+                return {'success': True, **self._wifi_status()}
+
+            sec = security.upper()
+            if password:
+                modes = []
+                if 'WEP' in sec:
+                    modes.append('wep')
+                else:
+                    if 'WPA3' in sec or 'SAE' in sec:
+                        modes.append('sae')
+                    modes += ['wpa-psk', 'wep']
+                for mode in modes:
+                    if record(mode, self._try_wifi_profile(ssid, password, mode)):
+                        time.sleep(2)
+                        return {'success': True, **self._wifi_status()}
+            else:
+                if record('open', self._try_wifi_profile(ssid, '', 'open')):
+                    time.sleep(2)
+                    return {'success': True, **self._wifi_status()}
+
+            error = ' ; '.join(part for part in attempts if part) or 'Connection failed'
+            if prep_errors:
+                error = f'{error} ; setup: {" | ".join(prep_errors)}'
+            return {'success': False, 'error': error, **self._wifi_status()}
+        except Exception as e:
+            return {'success': False, 'error': str(e), **self._wifi_status()}
+
+    def _wifi_overlay_bundle(self):
+        return '''<style>
+  #signitWifiOverlay{position:fixed;inset:0;z-index:2147483000;display:none;align-items:center;justify-content:center;background:rgba(2,6,23,.76);backdrop-filter:blur(10px);font-family:system-ui,-apple-system,sans-serif;color:#f8fafc}
+  #signitWifiOverlay.open{display:flex}
+  .signit-wifi-card{width:min(860px,92vw);max-height:88vh;overflow:hidden;border:1px solid rgba(148,163,184,.28);border-radius:28px;background:linear-gradient(145deg,rgba(15,23,42,.97),rgba(3,7,18,.97));box-shadow:0 36px 120px rgba(0,0,0,.55)}
+  .signit-wifi-head{display:flex;justify-content:space-between;gap:20px;padding:26px 30px;border-bottom:1px solid rgba(148,163,184,.16)}
+  .signit-wifi-head h2{font-size:28px;line-height:1.1;margin:0;font-weight:800}
+  .signit-wifi-head p{margin:8px 0 0;color:#94a3b8;font-size:15px}
+  .signit-wifi-key{display:inline-flex;align-items:center;justify-content:center;min-width:38px;height:30px;padding:0 10px;border-radius:10px;background:#1e293b;color:#cbd5e1;font-size:13px;font-weight:800;border:1px solid rgba(148,163,184,.2)}
+  .signit-wifi-close{border:0;border-radius:14px;background:#1f2937;color:#e5e7eb;font:800 15px system-ui;padding:0 16px;height:44px;cursor:pointer}
+  .signit-wifi-body{display:grid;grid-template-columns:1.1fr .9fr;gap:20px;padding:24px 30px 30px}
+  .signit-wifi-status{grid-column:1/-1;padding:13px 16px;border-radius:16px;background:rgba(15,23,42,.86);border:1px solid rgba(148,163,184,.16);color:#cbd5e1;font-size:14px}
+  .signit-wifi-list{min-height:310px;max-height:390px;overflow:auto;border-radius:18px;background:rgba(2,6,23,.52);border:1px solid rgba(148,163,184,.14);padding:8px}
+  .signit-wifi-net{width:100%;display:flex;align-items:center;justify-content:space-between;gap:16px;padding:14px 16px;margin:0 0 8px;border:1px solid transparent;border-radius:14px;background:rgba(30,41,59,.76);color:#e2e8f0;text-align:left;cursor:pointer}
+  .signit-wifi-net:focus,.signit-wifi-net.selected{outline:3px solid rgba(99,102,241,.6);border-color:#818cf8;background:rgba(67,56,202,.38)}
+  .signit-wifi-net strong{display:block;font-size:16px}
+  .signit-wifi-net span{display:block;margin-top:4px;color:#94a3b8;font-size:12px}
+  .signit-wifi-bars{font-weight:900;color:#34d399;white-space:nowrap}
+  .signit-wifi-form{display:flex;flex-direction:column;gap:14px}
+  .signit-wifi-form label{font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:#94a3b8;font-weight:800}
+  .signit-wifi-form input{width:100%;height:48px;border-radius:14px;border:1px solid rgba(148,163,184,.26);background:#020617;color:#f8fafc;font:700 16px system-ui;padding:0 14px}
+  .signit-wifi-form input:focus{outline:3px solid rgba(99,102,241,.6);border-color:#818cf8}
+  .signit-wifi-actions{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:6px}
+  .signit-wifi-actions button{height:48px;border:0;border-radius:14px;font:900 15px system-ui;cursor:pointer}
+  #signitWifiConnect{background:#6366f1;color:white}
+  #signitWifiScan{background:#1f2937;color:#e5e7eb}
+  .signit-wifi-help{padding-top:6px;color:#94a3b8;font-size:13px;line-height:1.5}
+  @media(max-width:820px){.signit-wifi-body{grid-template-columns:1fr}.signit-wifi-list{max-height:260px}.signit-wifi-head h2{font-size:23px}}
+</style>
+<div id="signitWifiOverlay" aria-hidden="true">
+  <div class="signit-wifi-card" role="dialog" aria-modal="true" aria-label="SignIT Wi-Fi setup">
+    <div class="signit-wifi-head">
+      <div>
+        <h2>Wi-Fi Setup</h2>
+        <p><span class="signit-wifi-key">F6</span> opens this anytime. Use Tab, arrows, Enter, and Esc. No mouse needed.</p>
+      </div>
+      <button class="signit-wifi-close" id="signitWifiClose" type="button">Close Esc</button>
+    </div>
+    <div class="signit-wifi-body">
+      <div class="signit-wifi-status" id="signitWifiStatus">Opening Wi-Fi tools...</div>
+      <div class="signit-wifi-list" id="signitWifiList" tabindex="0"></div>
+      <div class="signit-wifi-form">
+        <div>
+          <label for="signitWifiSsid">Network name</label>
+          <input id="signitWifiSsid" autocomplete="off" spellcheck="false" placeholder="Select a network or type SSID" />
+        </div>
+        <div>
+          <label for="signitWifiPassword">Password</label>
+          <input id="signitWifiPassword" type="password" autocomplete="off" placeholder="Leave blank for open networks" />
+        </div>
+        <input id="signitWifiSecurity" type="hidden" />
+        <div class="signit-wifi-actions">
+          <button id="signitWifiConnect" type="button">Connect</button>
+          <button id="signitWifiScan" type="button">Scan Again</button>
+        </div>
+        <div class="signit-wifi-help">After connecting, the screen may pause while networking switches. If this Pi is connected by SSH over Wi-Fi, that SSH session can drop. The player will keep retrying the SignIT server automatically.</div>
+      </div>
+    </div>
+  </div>
+</div>
+<script>
+(function(){
+  var overlay=document.getElementById('signitWifiOverlay');
+  var statusEl=document.getElementById('signitWifiStatus');
+  var listEl=document.getElementById('signitWifiList');
+  var ssidEl=document.getElementById('signitWifiSsid');
+  var passEl=document.getElementById('signitWifiPassword');
+  var secEl=document.getElementById('signitWifiSecurity');
+  var scanBtn=document.getElementById('signitWifiScan');
+  var connectBtn=document.getElementById('signitWifiConnect');
+  var closeBtn=document.getElementById('signitWifiClose');
+  var networks=[];
+  var selectedIndex=-1;
+  function setStatus(message){statusEl.textContent=message;}
+  function openWifi(){
+    overlay.classList.add('open');
+    overlay.setAttribute('aria-hidden','false');
+    setTimeout(function(){ssidEl.focus();},50);
+    scanWifi();
+  }
+  function closeWifi(){
+    overlay.classList.remove('open');
+    overlay.setAttribute('aria-hidden','true');
+  }
+  function bars(signal){
+    signal=parseInt(signal||0,10);
+    if(signal>80)return 'Excellent';
+    if(signal>60)return 'Good';
+    if(signal>35)return 'Fair';
+    return 'Weak';
+  }
+  function renderNetworks(){
+    if(!networks.length){
+      listEl.innerHTML='<div style="padding:18px;color:#94a3b8">No Wi-Fi networks found yet. Try Scan Again.</div>';
+      return;
+    }
+    listEl.innerHTML='';
+    networks.forEach(function(net,idx){
+      var btn=document.createElement('button');
+      btn.type='button';
+      btn.className='signit-wifi-net'+(idx===selectedIndex?' selected':'');
+      btn.innerHTML='<div><strong></strong><span></span></div><div class="signit-wifi-bars"></div>';
+      btn.querySelector('strong').textContent=net.ssid+(net.in_use?'  Connected':'');
+      btn.querySelector('span').textContent=(net.security_label||'Open network');
+      btn.querySelector('.signit-wifi-bars').textContent=bars(net.signal);
+      btn.addEventListener('click',function(){selectNetwork(idx,true);});
+      listEl.appendChild(btn);
+    });
+  }
+  function selectNetwork(idx,focusPassword){
+    selectedIndex=idx;
+    var net=networks[idx];
+    if(!net)return;
+    ssidEl.value=net.ssid||'';
+    secEl.value=net.security_label||'';
+    renderNetworks();
+    var active=listEl.querySelectorAll('.signit-wifi-net')[idx];
+    if(active)active.focus();
+    if(focusPassword)setTimeout(function(){passEl.focus();passEl.select();},80);
+  }
+  function scanWifi(){
+    setStatus('Scanning Wi-Fi networks...');
+    listEl.innerHTML='<div style="padding:18px;color:#94a3b8">Scanning...</div>';
+    fetch('/__signit/wifi/scan',{cache:'no-store'})
+      .then(function(r){return r.json();})
+      .then(function(data){
+        if(!data.success){throw new Error(data.error||'Scan failed');}
+        networks=data.networks||[];
+        selectedIndex=networks.findIndex(function(n){return n.in_use;});
+        if(selectedIndex>=0){
+          ssidEl.value=networks[selectedIndex].ssid||'';
+          secEl.value=networks[selectedIndex].security_label||'';
+        }
+        setStatus((data.connected?'Connected to '+data.ssid:'Not connected')+(data.ip?' · '+data.ip:'')+' · '+networks.length+' network(s) found');
+        renderNetworks();
+      })
+      .catch(function(err){
+        networks=[];
+        renderNetworks();
+        setStatus('Wi-Fi scan error: '+err.message);
+      });
+  }
+  function connectWifi(){
+    var ssid=ssidEl.value.trim();
+    if(!ssid){setStatus('Type or select a Wi-Fi network first.');ssidEl.focus();return;}
+    setStatus('Connecting to '+ssid+'...');
+    fetch('/__signit/wifi/connect',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({ssid:ssid,password:passEl.value,security:secEl.value})
+    })
+      .then(function(r){return r.json();})
+      .then(function(data){
+        if(!data.success){throw new Error(data.error||'Connection failed');}
+        setStatus('Connected to '+(data.ssid||ssid)+(data.ip?' · '+data.ip:'')+'. SignIT will reconnect automatically.');
+      })
+      .catch(function(err){setStatus('Wi-Fi connect error: '+err.message);});
+  }
+  document.addEventListener('keydown',function(e){
+    if(e.key==='F6'){
+      e.preventDefault();
+      if(overlay.classList.contains('open'))closeWifi(); else openWifi();
+      return;
+    }
+    if(!overlay.classList.contains('open'))return;
+    if(e.key==='Escape'){e.preventDefault();closeWifi();return;}
+    if((e.key==='ArrowDown'||e.key==='ArrowUp') && document.activeElement!==passEl && document.activeElement!==ssidEl){
+      e.preventDefault();
+      if(!networks.length)return;
+      var delta=e.key==='ArrowDown'?1:-1;
+      var next=selectedIndex<0?0:(selectedIndex+delta+networks.length)%networks.length;
+      selectNetwork(next,false);
+      return;
+    }
+    if(e.key==='Enter' && document.activeElement && document.activeElement.classList.contains('signit-wifi-net')){
+      e.preventDefault();
+      passEl.focus();
+    }
+  });
+  closeBtn.addEventListener('click',closeWifi);
+  scanBtn.addEventListener('click',scanWifi);
+  connectBtn.addEventListener('click',connectWifi);
+})();
+</script>'''
+
     def _start_content_server(self):
         """Start a local HTTP server with range-request support for video playback."""
         serve_dir = CACHE_DIR
@@ -2395,6 +3069,14 @@ class SignITPlayer:
                 self.end_headers()
                 self.wfile.write(encoded)
 
+            def _read_json_body(self):
+                try:
+                    length = int(self.headers.get('Content-Length') or 0)
+                    raw = self.rfile.read(length) if length > 0 else b'{}'
+                    return json.loads(raw.decode('utf-8') or '{}')
+                except Exception as e:
+                    return {'_error': str(e)}
+
             def do_GET(self):
                 parsed = urllib.parse.urlparse(self.path)
                 if parsed.path == '/__signit/stream/start':
@@ -2408,8 +3090,17 @@ class SignITPlayer:
                     params = urllib.parse.parse_qs(parsed.query)
                     kind = params.get('kind', ['client'])[0][:80]
                     message = params.get('message', [''])[0][:900]
+                    player.last_client_log = {'kind': kind, 'message': message, 'at': datetime.utcnow().isoformat() + 'Z'}
+                    if kind in ('asset-error', 'js-error', 'video-error', 'iframe-error'):
+                        player.last_media_error = f'{kind}: {message}'
+                        player.last_browser_error_at = time.time()
+                        player._report_diagnostics_async(f'browser_{kind}', severity='warning', summary=message[:240])
                     log.warning(f'Browser client log [{kind}]: {message}')
                     return self._send_json(200, {'success': True})
+                if parsed.path == '/__signit/wifi/status':
+                    return self._send_json(200, player._wifi_status())
+                if parsed.path == '/__signit/wifi/scan':
+                    return self._send_json(200, player._scan_wifi_networks())
 
                 path = self.translate_path(self.path)
                 if not os.path.isfile(path):
@@ -2466,6 +3157,22 @@ class SignITPlayer:
                             break
                         self.wfile.write(chunk)
 
+            def do_POST(self):
+                parsed = urllib.parse.urlparse(self.path)
+                if parsed.path == '/__signit/wifi/connect':
+                    payload = self._read_json_body()
+                    if payload.get('_error'):
+                        return self._send_json(400, {'success': False, 'error': payload['_error']})
+                    return self._send_json(
+                        200,
+                        player._connect_wifi_network(
+                            payload.get('ssid', ''),
+                            payload.get('password', ''),
+                            payload.get('security', ''),
+                        ),
+                    )
+                return self._send_json(404, {'success': False, 'error': 'Not found'})
+
             def do_HEAD(self):
                 path = self.translate_path(self.path)
                 if not os.path.isfile(path):
@@ -2481,7 +3188,7 @@ class SignITPlayer:
                 pass
 
         try:
-            self._http_server = http.server.HTTPServer(('127.0.0.1', CONTENT_SERVER_PORT), RangeHTTPHandler)
+            self._http_server = http.server.ThreadingHTTPServer(('127.0.0.1', CONTENT_SERVER_PORT), RangeHTTPHandler)
             log.info(f'Content server (range-enabled) started on http://127.0.0.1:{CONTENT_SERVER_PORT}')
             self._http_server.serve_forever()
         except Exception as e:
@@ -2501,10 +3208,11 @@ class SignITPlayer:
         # Prime psutil CPU measurement so first heartbeat returns a real value
         psutil.cpu_percent(interval=None)
 
-        if not self.register():
-            log.error('Failed to register. Retrying in 30 seconds...')
+        self._launch_last_known_good('boot')
+
+        while self.running and not self.register():
+            log.error('Failed to register. Keeping last-known content on screen and retrying in 30 seconds...')
             time.sleep(30)
-            return self.run()
 
         self._refresh_device_config(force_restart=True)
         log.info(f'Device ID: {self.device_id}')
@@ -2526,6 +3234,9 @@ class SignITPlayer:
 
         black_screen_thread = threading.Thread(target=self.black_screen_watchdog, daemon=True)
         black_screen_thread.start()
+
+        diagnostics_thread = threading.Thread(target=self.diagnostic_reporter, daemon=True)
+        diagnostics_thread.start()
 
         self._request_content_refresh('startup')
 
